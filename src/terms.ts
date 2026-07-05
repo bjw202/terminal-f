@@ -14,8 +14,36 @@ import type { PaneId } from "./types";
 
 let fontSize = 14;
 
+// Copy-on-select: when on, completing a selection copies it to the clipboard
+// automatically (opt-in, persisted in uiPrefs; default off). Mirrors the
+// classic X11/terminal behaviour some users expect.
+let copyOnSelect = false;
+
 export function currentFontSize(): number {
   return fontSize;
+}
+
+export function setCopyOnSelect(on: boolean): void {
+  copyOnSelect = on;
+}
+
+/** Decide what a keydown means for multiline input (single source of truth for
+ * the key handler and its tests). Ctrl+Enter / Shift+Enter insert a newline;
+ * while an IME syllable is composing we defer to compositionend so the
+ * character commits first. Returns null for keys we don't claim. */
+export type NewlineChord = "send" | "defer" | null;
+export function newlineChordFor(ev: {
+  key: string;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+  isComposing?: boolean;
+  keyCode?: number;
+}): NewlineChord {
+  if (ev.key !== "Enter" || ev.altKey || ev.metaKey) return null;
+  if (!ev.ctrlKey && !ev.shiftKey) return null;
+  return ev.isComposing || ev.keyCode === 229 ? "defer" : "send";
 }
 
 /** Apply theme/font to all live terminals (xterm supports live updates). */
@@ -73,6 +101,26 @@ function quotePath(p: string): string {
   return /\s/.test(p) ? `"${p}"` : p;
 }
 
+/** Copy the pane's current selection to the OS clipboard via the backend
+ * (arboard), matching the paste bridge's approach. `clear` deselects after
+ * copying — true for explicit copy (so a second Ctrl+C sends ^C, like Windows
+ * Terminal), false for copy-on-select (deselecting mid-drag would be jarring).
+ * Returns false when there is nothing selected. */
+export async function copySelection(paneId: PaneId, clear = true): Promise<boolean> {
+  const view = views.get(paneId);
+  if (!view) return false;
+  const text = view.term.getSelection();
+  if (!text) return false;
+  try {
+    await ipc.copyToClipboard(text);
+    if (clear) view.term.clearSelection();
+    return true;
+  } catch (e) {
+    console.warn("[copy]", e);
+    return false;
+  }
+}
+
 /** Ctrl+V bridge (ADR-010): read the OS clipboard via the backend and paste
  * text as text, or a clipboard image as a saved file's path. Called from the
  * key handler because xterm cancels the keydown, so the browser never fires a
@@ -114,6 +162,18 @@ export async function pasteImageBlob(paneId: PaneId, blob: Blob): Promise<boolea
   } catch (e) {
     console.warn("[pasteImage]", e);
     return false;
+  }
+}
+
+/** Decode a base64 payload as UTF-8 text (OSC 52 clipboard payloads are UTF-8
+ * base64, so a naive atob would mangle non-ASCII). Returns null on bad input. */
+function decodeBase64Utf8(b64: string): string | null {
+  try {
+    const bin = atob(b64);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
   }
 }
 
@@ -201,29 +261,156 @@ export function getOrCreateView(paneId: PaneId, opts: CreateOpts): PaneView {
   term.open(body);
   tryWebgl(term);
 
+  // Multiline newline chord state (see the key handler below). A newline chord
+  // pressed during — or immediately after — an IME composition must not send
+  // the newline until the committed syllable has been written, or the newline
+  // races ahead and the last character lands on the next line. So we set
+  // `pendingNewline` and let onData attach the newline to the committed text.
+  //
+  // `composing` / `awaitingComposedData` track the composition window ourselves
+  // because in Chromium the Enter keydown often arrives *after* compositionend
+  // (isComposing already false) while xterm still delivers the committed text
+  // on a later tick — the exact case a naive isComposing check misses.
+  let pendingNewline = false;
+  let composing = false;
+  let awaitingComposedData = false;
+
   // Input path: xterm onData -> writePane(paneId, data) -> backend PTY writer.
   term.onData((data) => {
-    ipc.writePane(paneId, data).catch((e) => console.warn("[writePane]", e));
+    awaitingComposedData = false; // this chunk is (or follows) the committed text
+    // A newline chord is pending from a composition: append it after the text,
+    // atomically, so ordering is guaranteed without racing timers.
+    const out = pendingNewline ? data + "\x1b\r" : data;
+    pendingNewline = false;
+    ipc.writePane(paneId, out).catch((e) => console.warn("[writePane]", e));
   });
   // Keep app-level shortcuts (split/close) out of the PTY input stream.
-  // Ctrl+V is claimed as paste (like Windows Terminal): xterm would otherwise
-  // send ^V to the PTY and cancel the event, so no browser paste ever fires.
-  // We read the OS clipboard via the backend instead (text or image).
+  // Copy/paste are claimed like Windows Terminal (xterm would otherwise send
+  // ^C/^V to the PTY and cancel the browser events), and read/written through
+  // the backend (arboard) to avoid WebView clipboard permission prompts:
+  //   Ctrl+Shift+C        -> always copy the selection
+  //   Ctrl+C w/ selection -> copy + deselect (a 2nd press then sends ^C/SIGINT)
+  //   Ctrl+C w/o selection -> pass ^C through untouched
+  //   Ctrl+V              -> paste OS clipboard (text, or a saved image's path)
+  //   Ctrl+Enter / Shift+Enter -> insert a newline (multiline input, see below)
+  //
+  // Multiline input: Claude Code (and VS Code's terminal-setup convention)
+  // read ESC+CR (\x1b\r, "Meta+Enter") as "insert a newline" instead of submit.
+  // xterm always sends a bare \r for Enter regardless of modifiers, so we
+  // translate the chord ourselves.
+  //
+  // Korean/IME safety (the hard part): the newline chord must never disturb an
+  // in-progress or just-finished composition. Three cases:
+  //   - composing now (isComposing / keyCode 229 / our flag): let the IME
+  //     commit (return true, no preventDefault); onData appends the newline.
+  //   - composition just ended (awaitingComposedData): the committed text is
+  //     still in flight; suppress the Enter and let onData append the newline.
+  //   - no composition: send the newline immediately.
+  const sendNewline = () =>
+    ipc.writePane(paneId, "\x1b\r").catch((e) => console.warn("[multiline]", e));
+
   term.attachCustomKeyEventHandler((ev) => {
     if (opts.isShortcut(ev)) return false;
-    if (
-      ev.type === "keydown" &&
-      ev.ctrlKey &&
-      !ev.altKey &&
-      !ev.metaKey &&
-      ev.key.toLowerCase() === "v"
-    ) {
-      ev.preventDefault(); // suppress any native paste path too
-      void pasteViaBackend(paneId);
+    if (ev.type !== "keydown") return true;
+
+    const chord = newlineChordFor(ev);
+    if (chord !== null) {
+      const composingNow = chord === "defer" || composing;
+      if (composingNow) {
+        pendingNewline = true; // onData appends after the IME commits
+        return true; // let the composition commit; don't suppress the key
+      }
+      if (awaitingComposedData) {
+        ev.preventDefault(); // suppress the bare \r so it doesn't submit
+        pendingNewline = true; // onData appends after the in-flight text
+        return false;
+      }
+      ev.preventDefault();
+      void sendNewline();
       return false;
+    }
+
+    // Never disturb an in-progress IME composition with the shortcuts below.
+    if (ev.isComposing || ev.keyCode === 229 || composing) return true;
+
+    if (ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+      const k = ev.key.toLowerCase();
+      if (k === "c" && ev.shiftKey) {
+        ev.preventDefault();
+        void copySelection(paneId);
+        return false;
+      }
+      if (k === "c" && !ev.shiftKey && term.hasSelection()) {
+        ev.preventDefault();
+        void copySelection(paneId);
+        return false;
+      }
+      if (k === "v" && !ev.shiftKey) {
+        ev.preventDefault(); // suppress any native paste path too
+        void pasteViaBackend(paneId);
+        return false;
+      }
     }
     return true;
   });
+
+  // Track the composition window ourselves. `awaitingComposedData` stays true
+  // from compositionend until the committed text lands in onData, so a chord
+  // keydown arriving in that gap (isComposing already false) still defers.
+  term.textarea?.addEventListener("compositionstart", () => {
+    composing = true;
+    awaitingComposedData = false;
+  });
+  term.textarea?.addEventListener("compositionend", () => {
+    composing = false;
+    awaitingComposedData = true;
+    // Fallback: onData normally clears these within a tick. If the composition
+    // delivered no text (aborted), flush any pending newline and clear state so
+    // it can't attach to unrelated later input. 120ms is well past onData's
+    // same-tick delivery, so this never races ahead of committed text.
+    setTimeout(() => {
+      awaitingComposedData = false;
+      if (pendingNewline) {
+        pendingNewline = false;
+        void sendNewline();
+      }
+    }, 120);
+  });
+
+  // Copy-on-select (opt-in): copy without deselecting so the highlight stays.
+  term.onSelectionChange(() => {
+    if (copyOnSelect && term.hasSelection()) void copySelection(paneId, false);
+  });
+
+  // Right-click: copy when there's a selection, else paste — the Windows
+  // Terminal convention. Suppress the native context menu either way.
+  el.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    if (term.hasSelection()) void copySelection(paneId);
+    else void pasteViaBackend(paneId);
+  });
+
+  // OSC 52 clipboard write: TUIs (Claude Code, tmux, vim, neovim) copy to the
+  // system clipboard by emitting ESC ] 52 ; <sel> ; <base64> ST. xterm.js has
+  // no clipboard binding and drops OSC 52 by default, so those copies silently
+  // vanished — the reason "copy inside Claude Code" pasted stale content. We
+  // decode the payload and write it to the OS clipboard via the backend.
+  // Read requests (payload "?") are refused: honoring them would let any
+  // process running in a pane exfiltrate the user's clipboard.
+  term.parser.registerOscHandler(52, (data) => {
+    const semi = data.indexOf(";");
+    const payload = semi >= 0 ? data.slice(semi + 1) : data;
+    if (payload === "" || payload === "?") return true; // reject reads; nothing to write
+    if (payload.length > 8 * 1024 * 1024) return true; // ignore absurd payloads
+    const text = decodeBase64Utf8(payload);
+    if (text) void ipc.copyToClipboard(text).catch((e) => console.warn("[osc52]", e));
+    return true; // handled: don't let xterm print the raw sequence
+  });
+
+  // OSC 9;9 (ConEmu/WT cwd report) is consumed by the backend reader for live
+  // cwd tracking (ADR-011); swallow it here so it never renders as stray text.
+  // Other OSC 9 uses (9;4 progress, notifications) pass through untouched.
+  term.parser.registerOscHandler(9, (data) => data.startsWith("9;"));
 
   // Image paste bridge (ADR-010). Windows terminals forward only clipboard
   // TEXT on Ctrl+V, so image-aware TUIs (Claude Code) never see screenshots.

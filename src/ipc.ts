@@ -86,6 +86,27 @@ export const savePastedImage = (dataBase64: string, mime?: string) =>
 // Direct OS clipboard read for Ctrl+V (xterm swallows the browser paste event).
 export const pasteClipboard = () =>
   invoke<{ kind: "text" | "imagePath"; data: string } | { kind: "none" }>("paste_clipboard");
+// Smart-copy: write selected terminal text to the OS clipboard (Ctrl+C with a
+// selection / Ctrl+Shift+C / right-click copy). Written in Rust via arboard.
+export const copyToClipboard = (text: string) => invoke<void>("copy_to_clipboard", { text });
+
+// Opt-in pwsh $PROFILE shell integration: status + install for a named feature
+// ("multiline" = Alt+Enter->AddLine, "cwd" = OSC 9;9 prompt reporter). Install
+// edits the user's $PROFILE, so the UI confirms with the snippet first.
+export type ShellIntegrationFeature = "multiline" | "cwd";
+export interface PwshIntegrationInfo {
+  profilePath: string | null;
+  installed: boolean;
+  /** True when the installed block matches the current snippet; false when an
+   *  older block is present and re-running would refresh it. */
+  upToDate: boolean;
+  snippet: string;
+  available: boolean;
+}
+export const pwshIntegrationStatus = (feature: ShellIntegrationFeature) =>
+  invoke<PwshIntegrationInfo>("pwsh_integration_status", { feature });
+export const installPwshIntegration = (feature: ShellIntegrationFeature) =>
+  invoke<PwshIntegrationInfo>("install_pwsh_integration", { feature });
 export const injectPrompt = (opts: {
   paneId?: string;
   label?: string;

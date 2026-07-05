@@ -14,7 +14,7 @@ import { renderSidebar, sidebarBusy } from "./sidebar";
 import { registerCommandProvider } from "./commands";
 import { isPaletteOpen, openPalette } from "./palette";
 import { setTheme, themeById, THEMES } from "./themes";
-import { listModal, promptModal } from "./modal";
+import { confirmModal, listModal, promptModal } from "./modal";
 import {
   collectLeaves,
   firstPaneId,
@@ -79,6 +79,73 @@ function setFontSize(size: number): void {
   terms.applyTerminalOptions({ fontSize: size });
   uiPrefs.fontSize = terms.currentFontSize();
   saveUiPrefs();
+}
+
+function toggleCopyOnSelect(): void {
+  const next = !(uiPrefs.copyOnSelect === true);
+  uiPrefs.copyOnSelect = next;
+  terms.setCopyOnSelect(next);
+  saveUiPrefs();
+  showStatus(`Copy-on-select ${next ? "enabled" : "disabled"}`);
+}
+
+// Opt-in pwsh $PROFILE shell integration. Both features edit the user's profile,
+// so we show the exact snippet and confirm first, then require a fresh pane.
+//   - "multiline": Ctrl/Shift+Enter reach pwsh as Alt+Enter (unbound by
+//     default); bind Alt+Enter -> AddLine so the chord inserts a newline.
+//   - "cwd": a prompt wrapper emits OSC 9;9 so a split opens in the live dir.
+async function installShellIntegration(
+  feature: ipc.ShellIntegrationFeature,
+  labels: { title: string; what: string; use: string },
+): Promise<void> {
+  let info;
+  try {
+    info = await ipc.pwshIntegrationStatus(feature);
+  } catch (e) {
+    showStatus(String(e), true);
+    return;
+  }
+  if (!info.available) {
+    showStatus("PowerShell (pwsh) not found — this only applies to PowerShell.", true);
+    return;
+  }
+  // Already present AND current — nothing to do but remind how to use/remove it.
+  if (info.installed && info.upToDate) {
+    listModal(`${labels.title} — already installed`, [
+      `Profile: ${info.profilePath}`,
+      "",
+      labels.use,
+      "Open a NEW PowerShell pane to pick it up (profiles load at shell start).",
+      "To undo, delete the fenced terminal-f block from the profile above.",
+    ]);
+    return;
+  }
+  // Installed but an OLDER block is present → offer to refresh it in place.
+  const updating = info.installed; // implies !info.upToDate here
+  const ok = await confirmModal({
+    title: updating ? `Update ${labels.title}` : labels.title,
+    okLabel: updating ? "Update" : "Install",
+    body: [
+      updating
+        ? "An older version of this block is in your profile. This replaces it with the current one:"
+        : labels.what,
+      "",
+      `  ${info.profilePath}`,
+      "",
+      ...info.snippet.split("\n").map((l) => (l ? `    ${l}` : "")),
+      "Open a NEW PowerShell pane afterwards to pick it up.",
+    ],
+  });
+  restoreTermFocus();
+  if (!ok) return;
+  try {
+    const res = await ipc.installPwshIntegration(feature);
+    showStatus(
+      `${updating ? "Updated" : "Installed"}. Open a NEW PowerShell pane to use it. (${res.profilePath})`,
+    );
+  } catch (e) {
+    showStatus(String(e), true);
+  }
 }
 
 // ------------------------------------------------------------------ render
@@ -437,6 +504,31 @@ registerCommandProvider(() => [
   { id: "sidebar.toggle", title: "View: Toggle sidebar", hint: "Ctrl+Shift+B", run: () => toggleSidebar() },
   { id: "font.bigger", title: "View: Increase font size", run: () => setFontSize(terms.currentFontSize() + 1) },
   { id: "font.smaller", title: "View: Decrease font size", run: () => setFontSize(terms.currentFontSize() - 1) },
+  {
+    id: "copy.onSelect",
+    title: `Copy: ${uiPrefs.copyOnSelect ? "Disable" : "Enable"} copy-on-select`,
+    run: () => toggleCopyOnSelect(),
+  },
+  {
+    id: "shell.pwshMultiline",
+    title: "Shell: Enable multiline in PowerShell (Ctrl+Enter)",
+    run: () =>
+      installShellIntegration("multiline", {
+        title: "Enable multiline input in PowerShell?",
+        what: "This appends the following to your PowerShell profile so that Ctrl+Enter / Shift+Enter insert a newline instead of running the line:",
+        use: "Ctrl+Enter / Shift+Enter insert a newline at the pwsh prompt.",
+      }),
+  },
+  {
+    id: "shell.pwshCwd",
+    title: "Shell: Enable live directory tracking in PowerShell (split follows cwd)",
+    run: () =>
+      installShellIntegration("cwd", {
+        title: "Enable live directory tracking in PowerShell?",
+        what: "This appends the following to your PowerShell profile so that a new split opens in the directory you're currently in (not where the pane started):",
+        use: "New splits open in the pane's current directory.",
+      }),
+  },
 ]);
 
 // ------------------------------------------------------- injection (M2.0)
@@ -1004,9 +1096,11 @@ async function boot(): Promise<void> {
     theme: typeof snap.ui?.theme === "string" ? snap.ui.theme : undefined,
     fontSize: typeof snap.ui?.fontSize === "number" ? snap.ui.fontSize : undefined,
     sidebar: typeof snap.ui?.sidebar === "object" && snap.ui.sidebar ? snap.ui.sidebar : {},
+    copyOnSelect: snap.ui?.copyOnSelect === true,
   };
   setTheme(themeById(uiPrefs.theme));
   if (uiPrefs.fontSize) terms.applyTerminalOptions({ fontSize: uiPrefs.fontSize });
+  terms.setCopyOnSelect(uiPrefs.copyOnSelect === true);
   refreshSidebar();
   const target = snap.activeWorkspaceId ?? metas[0]?.id;
   if (target) await switchTo(target);

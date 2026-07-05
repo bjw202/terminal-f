@@ -8,6 +8,7 @@ pub mod output;
 pub mod paste;
 pub mod pipe;
 pub mod session;
+pub mod shellint;
 pub mod spool;
 pub mod state;
 pub mod template;
@@ -161,6 +162,9 @@ pub fn run() {
             commands::trust_repo,
             commands::save_pasted_image,
             commands::paste_clipboard,
+            commands::copy_to_clipboard,
+            commands::pwsh_integration_status,
+            commands::install_pwsh_integration,
             commands::resize_pty,
             commands::replay_pane,
             commands::get_boot_info,

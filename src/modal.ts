@@ -90,6 +90,67 @@ export function promptModal(opts: PromptOpts): Promise<PromptResult | null> {
   });
 }
 
+/** Confirm dialog showing a multi-line body (e.g. a snippet + file path) with
+ * Cancel/OK. Resolves true only on explicit OK. Used before edits the user must
+ * approve (e.g. writing to their $PROFILE). */
+export function confirmModal(opts: {
+  title: string;
+  body: string[];
+  okLabel?: string;
+}): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const box = document.createElement("div");
+    box.className = "modal-box wide";
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "modal-title";
+    titleEl.textContent = opts.title;
+    box.appendChild(titleEl);
+
+    const list = document.createElement("div");
+    list.className = "modal-list";
+    for (const row of opts.body) {
+      const el = document.createElement("div");
+      el.className = "modal-list-row";
+      el.textContent = row;
+      list.appendChild(el);
+    }
+    box.appendChild(list);
+
+    const buttons = document.createElement("div");
+    buttons.className = "modal-buttons";
+    const cancel = document.createElement("button");
+    cancel.className = "modal-btn";
+    cancel.textContent = "Cancel";
+    const ok = document.createElement("button");
+    ok.className = "modal-btn primary";
+    ok.textContent = opts.okLabel ?? "OK";
+    buttons.append(cancel, ok);
+    box.appendChild(buttons);
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    ok.focus();
+
+    const close = (result: boolean) => {
+      overlay.remove();
+      resolve(result);
+    };
+    cancel.addEventListener("click", () => close(false));
+    ok.addEventListener("click", () => close(true));
+    overlay.addEventListener("mousedown", (e) => {
+      if (e.target === overlay) close(false);
+    });
+    overlay.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") close(false);
+      if (e.key === "Enter") close(true);
+    });
+  });
+}
+
 export function listModal(title: string, rows: string[]): void {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";

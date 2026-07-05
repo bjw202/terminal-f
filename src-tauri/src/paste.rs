@@ -119,6 +119,15 @@ pub enum PasteContent {
     None,
 }
 
+/// Write plain text to the OS clipboard — the smart-copy path (Ctrl+C with a
+/// selection, Ctrl+Shift+C, right-click copy). Writing in Rust via arboard,
+/// like `read_clipboard`, sidesteps WebView clipboard permission/focus prompts.
+pub fn write_clipboard_text(text: &str) -> Result<(), String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| format!("clipboard error: {e}"))?;
+    cb.set_text(text.to_owned())
+        .map_err(|e| format!("clipboard set error: {e}"))
+}
+
 /// Read the OS clipboard directly (no browser events involved): text wins,
 /// else an image is persisted under `dir` and its path returned. Reading in
 /// Rust avoids both xterm's Ctrl+V interception and WebView clipboard
@@ -141,6 +150,13 @@ pub fn read_clipboard(dir: &Path, stamp: u64) -> Result<PasteContent, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes tests that touch the OS clipboard. arboard on Windows uses
+    /// the Win32 clipboard (OLE) which has thread affinity; two clipboard tests
+    /// running on separate harness threads at once corrupts the heap
+    /// (STATUS_HEAP_CORRUPTION). Every clipboard test takes this lock first.
+    static CLIPBOARD_LOCK: Mutex<()> = Mutex::new(());
 
     fn tmp() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("termf-paste-test-{}", uuid::Uuid::new_v4()));
@@ -221,6 +237,7 @@ mod tests {
     /// runs threads, but no other test touches the clipboard).
     #[test]
     fn read_clipboard_prefers_text() {
+        let _guard = CLIPBOARD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tmp();
         let mut cb = match arboard::Clipboard::new() {
             Ok(cb) => cb,
@@ -236,6 +253,34 @@ mod tests {
         };
         match got {
             PasteContent::Text(t) => assert_eq!(t, "TERMF_CLIP_TEST"),
+            other => panic!("expected text, got {other:?}"),
+        }
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// Round-trips text through write_clipboard_text -> read_clipboard,
+    /// restoring the user's clipboard afterwards (same discipline as
+    /// read_clipboard_prefers_text).
+    #[test]
+    fn write_then_read_round_trips_text() {
+        let _guard = CLIPBOARD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tmp();
+        let mut cb = match arboard::Clipboard::new() {
+            Ok(cb) => cb,
+            Err(_) => return, // headless CI without a clipboard: skip
+        };
+        let saved = cb.get_text().ok();
+        drop(cb); // release before write_clipboard_text opens its own handle
+        write_clipboard_text("TERMF_COPY_TEST").unwrap();
+        let got = read_clipboard(&dir, 1).unwrap();
+        // restore before asserting so a failure doesn't clobber the user
+        let mut cb = arboard::Clipboard::new().unwrap();
+        match &saved {
+            Some(t) => cb.set_text(t.clone()).ok(),
+            None => cb.clear().ok().map(|_| ()),
+        };
+        match got {
+            PasteContent::Text(t) => assert_eq!(t, "TERMF_COPY_TEST"),
             other => panic!("expected text, got {other:?}"),
         }
         fs::remove_dir_all(dir).ok();

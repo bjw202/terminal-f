@@ -145,6 +145,10 @@ pub struct PtySession {
     pub spool: Mutex<Option<crate::spool::SpoolWriter>>,
     /// Precomputed spool file path for this session.
     pub spool_path: PathBuf,
+    /// Live cwd reported by the shell via OSC 9;9 / OSC 7 (shell integration,
+    /// ADR-011). None until the shell emits it. split_pane prefers this over
+    /// the creation-time `cwd` so a new pane opens in the current directory.
+    pub last_cwd: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,6 +217,126 @@ fn scan_bracketed_paste(chunk: &str) -> Option<bool> {
         (Some(_), None) => Some(true),
         (None, Some(_)) => Some(false),
         (None, None) => None,
+    }
+}
+
+/// Cap on the cwd-scan carry buffer: a partial OSC sequence spanning read
+/// chunks is normally tiny; beyond this the buffer is malformed junk, so drop.
+const CWD_SCAN_CAP: usize = 8192;
+
+/// Scan `buf` for cwd-report OSC sequences a shell emits from its prompt:
+/// `OSC 9;9;<path>` (ConEmu / Windows Terminal) and `OSC 7;file://host/<path>`.
+/// Terminator is BEL (0x07) or ST (ESC `\`). Returns the last cwd found and how
+/// many bytes were fully consumed; the caller keeps `buf[consumed..]`, which
+/// may hold a sequence split across read chunks, for the next scan. `consumed`
+/// always lands on an ASCII (char) boundary, so slicing/draining is safe.
+pub fn scan_cwd(buf: &str) -> (Option<String>, usize) {
+    let b = buf.as_bytes();
+    let mut last: Option<String> = None;
+    let mut pos = 0;
+    loop {
+        let Some(esc) = find_osc_start(b, pos) else {
+            return (last, b.len());
+        };
+        match find_osc_end(b, esc + 2) {
+            Some((body_end, seq_end)) => {
+                if let Some(cwd) = parse_cwd_osc(&buf[(esc + 2).min(body_end)..body_end]) {
+                    last = Some(cwd);
+                }
+                pos = seq_end.max(esc + 1); // guarantee forward progress
+            }
+            None => return (last, esc), // incomplete: keep from the ESC
+        }
+    }
+}
+
+/// Index of the next `ESC ]` at/after `from`, or a trailing lone `ESC` (an
+/// incomplete OSC start whose `]` may arrive in the next chunk).
+fn find_osc_start(b: &[u8], from: usize) -> Option<usize> {
+    let mut i = from;
+    while i + 1 < b.len() {
+        if b[i] == 0x1b && b[i + 1] == b']' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    if b.last() == Some(&0x1b) {
+        return Some(b.len() - 1);
+    }
+    None
+}
+
+/// Find the OSC terminator starting at `from`. Returns (body_end, seq_end):
+/// BEL or ST completes it; a bare ESC mid-buffer means malformed → resync at
+/// that ESC; end-of-buffer without a terminator returns None (incomplete).
+fn find_osc_end(b: &[u8], from: usize) -> Option<(usize, usize)> {
+    let mut j = from;
+    while j < b.len() {
+        match b[j] {
+            0x07 => return Some((j, j + 1)),
+            0x1b => {
+                if j + 1 < b.len() {
+                    if b[j + 1] == b'\\' {
+                        return Some((j, j + 2)); // ST = ESC \
+                    }
+                    return Some((j, j)); // malformed: resync at this ESC
+                }
+                return None; // ESC at end: ST may be split across chunks
+            }
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+fn parse_cwd_osc(body: &str) -> Option<String> {
+    if let Some(rest) = body.strip_prefix("9;9;") {
+        let p = rest.trim().trim_matches('"');
+        if !p.is_empty() {
+            return Some(p.to_string());
+        }
+    } else if let Some(rest) = body.strip_prefix("7;") {
+        return parse_file_url(rest.trim());
+    }
+    None
+}
+
+/// `file://host/C:/path` or `file:///C:/path` -> `C:/path` (percent-decoded).
+fn parse_file_url(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("file://")?;
+    let path = match rest.find('/') {
+        Some(i) => &rest[i..],
+        None => rest,
+    };
+    let decoded = percent_decode(path);
+    let win = decoded.strip_prefix('/').unwrap_or(&decoded).to_string();
+    (!win.is_empty()).then_some(win)
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -381,6 +505,7 @@ impl SessionRegistry {
             observe: AtomicBool::new(false),
             spool: Mutex::new(None),
             spool_path,
+            last_cwd: Mutex::new(None),
         });
 
         let join = spawn_reader_thread(Arc::clone(&session), reader);
@@ -407,6 +532,14 @@ impl SessionRegistry {
         let inner = self.inner.lock().unwrap();
         let sid = inner.pane_to_session.get(pane_id)?;
         inner.sessions.get(sid).cloned()
+    }
+
+    /// The live cwd a pane's shell last reported via OSC (ADR-011), if any.
+    /// split_pane prefers this over the leaf's creation-time cwd.
+    pub fn pane_live_cwd(&self, pane_id: &str) -> Option<String> {
+        let session = self.session_for_pane(pane_id)?;
+        let cwd = session.last_cwd.lock().unwrap().clone()?;
+        Some(cwd)
     }
 
     /// Write raw input to the PTY of an explicitly named pane.
@@ -737,6 +870,8 @@ fn spawn_reader_thread(
         .spawn(move || {
             let mut buf = [0u8; READ_CHUNK_SIZE];
             let mut pending: Vec<u8> = Vec::new();
+            // Carry buffer for cwd OSC sequences that straddle read chunks.
+            let mut cwd_buf = String::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
@@ -747,6 +882,18 @@ fn spawn_reader_thread(
                             *session.last_output_at.lock().unwrap() = std::time::Instant::now();
                             if let Some(enabled) = scan_bracketed_paste(&text) {
                                 session.bracketed_paste.store(enabled, Ordering::SeqCst);
+                            }
+                            // Track live cwd from shell-integration OSC (ADR-011).
+                            cwd_buf.push_str(&text);
+                            let (cwd, consumed) = scan_cwd(&cwd_buf);
+                            if let Some(c) = cwd {
+                                *session.last_cwd.lock().unwrap() = Some(c);
+                            }
+                            if consumed > 0 {
+                                cwd_buf.drain(..consumed);
+                            }
+                            if cwd_buf.len() > CWD_SCAN_CAP {
+                                cwd_buf.clear();
                             }
                             // Observed panes also spool to disk so the control
                             // API can serve full output by byte offset (M2.2).
@@ -881,5 +1028,58 @@ mod tests {
         // On any Windows box at least cmd must resolve.
         let shell = detect_shell().expect("a shell must be found");
         assert!(!shell.is_empty());
+    }
+
+    #[test]
+    fn scan_cwd_osc99_bel_and_st() {
+        let s = "\x1b]9;9;C:\\proj\x07";
+        let (c, consumed) = scan_cwd(s);
+        assert_eq!(c.as_deref(), Some("C:\\proj"));
+        assert_eq!(consumed, s.len());
+        // ST terminator, with surrounding output
+        let (c2, _) = scan_cwd("pre\x1b]9;9;C:\\a\x1b\\post");
+        assert_eq!(c2.as_deref(), Some("C:\\a"));
+    }
+
+    #[test]
+    fn scan_cwd_last_wins_and_strips_quotes() {
+        let (c, consumed) = scan_cwd("\x1b]9;9;C:\\a\x07\x1b]9;9;\"C:\\b\"\x07");
+        assert_eq!(c.as_deref(), Some("C:\\b"));
+        assert_eq!(consumed, "\x1b]9;9;C:\\a\x07\x1b]9;9;\"C:\\b\"\x07".len());
+    }
+
+    #[test]
+    fn scan_cwd_incomplete_sequence_is_kept() {
+        // A sequence split across read chunks: output before it is consumed,
+        // the partial OSC is retained (consumed points at the ESC).
+        let (c, consumed) = scan_cwd("out\x1b]9;9;C:\\par");
+        assert_eq!(c, None);
+        assert_eq!(consumed, 3);
+        // Completing the same sequence in the next scan yields the cwd.
+        let (c2, _) = scan_cwd("\x1b]9;9;C:\\partial\x07");
+        assert_eq!(c2.as_deref(), Some("C:\\partial"));
+    }
+
+    #[test]
+    fn scan_cwd_osc7_file_url_percent_decoded() {
+        let (c, _) = scan_cwd("\x1b]7;file://host/C:/Users/foo%20bar\x1b\\");
+        assert_eq!(c.as_deref(), Some("C:/Users/foo bar"));
+    }
+
+    #[test]
+    fn scan_cwd_ignores_unrelated_osc_and_plain() {
+        // OSC 0 (window title) is fully consumed but yields no cwd.
+        let title = "\x1b]0;window title\x07";
+        assert_eq!(scan_cwd(title), (None, title.len()));
+        assert_eq!(scan_cwd("plain, no escapes"), (None, "plain, no escapes".len()));
+    }
+
+    #[test]
+    fn scan_cwd_handles_utf8_between_sequences() {
+        // Non-ASCII output before a sequence must not break byte scanning.
+        let s = "안녕 pwsh\x1b]9;9;C:\\프로젝트\x07";
+        let (c, consumed) = scan_cwd(s);
+        assert_eq!(c.as_deref(), Some("C:\\프로젝트"));
+        assert_eq!(consumed, s.len());
     }
 }

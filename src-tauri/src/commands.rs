@@ -301,9 +301,18 @@ pub fn split_pane(
         let ws = store
             .get_mut(&workspace_id)
             .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
-        let cwd = layout::find_pane(&ws.root, &pane_id)
+        let leaf_cwd = layout::find_pane(&ws.root, &pane_id)
             .map(|l| l.cwd.clone())
             .ok_or_else(|| format!("pane not found: {pane_id}"))?;
+        // Prefer the shell's live cwd (OSC 9;9 shell integration, ADR-011) so a
+        // split opens where the user actually is; fall back to the leaf's
+        // creation-time cwd when no integration/report exists. Guard on it
+        // being a real directory so a stale/garbage report can't break spawn.
+        let cwd = state
+            .registry
+            .pane_live_cwd(&pane_id)
+            .filter(|c| std::path::Path::new(c).is_dir())
+            .unwrap_or(leaf_cwd);
         let new_leaf = layout::new_pane_leaf(&cwd);
         let new_pane_id = layout::split_pane(&mut ws.root, &pane_id, direction, new_leaf)
             .map_err(|e| e.to_string())?;
@@ -1023,6 +1032,146 @@ pub fn save_pasted_image(
 pub fn paste_clipboard(state: State<'_, AppState>) -> Result<crate::paste::PasteContent, String> {
     let dir = state.config_path.with_file_name("paste");
     crate::paste::read_clipboard(&dir, crate::model::now_ms())
+}
+
+/// Copy selected terminal text to the OS clipboard (smart Ctrl+C / Ctrl+Shift+C
+/// / right-click copy). Writing in Rust via arboard sidesteps WebView clipboard
+/// permission/focus issues, mirroring paste_clipboard. Empty text is a no-op so
+/// a stray copy of nothing never clobbers the clipboard.
+#[tauri::command]
+pub fn copy_to_clipboard(text: String) -> Result<(), String> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    crate::paste::write_clipboard_text(&text)
+}
+
+// ------------------------------------------ shell integration: pwsh $PROFILE
+
+/// Status of an opt-in pwsh `$PROFILE` block (see shellint.rs). Returned for the
+/// confirmation UI before we touch the user's profile.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PwshIntegrationInfo {
+    /// Resolved pwsh `$PROFILE` path (may not exist on disk yet).
+    pub profile_path: Option<String>,
+    /// Whether this feature's fenced block is already present.
+    pub installed: bool,
+    /// Whether the installed block byte-matches the *current* snippet. False
+    /// when an older version of the block is present and a refresh would change
+    /// it — the UI offers an update in that case. Always true when not installed
+    /// is irrelevant; only meaningful together with `installed`.
+    pub up_to_date: bool,
+    /// The exact block we would add — shown to the user for confirmation.
+    pub snippet: String,
+    /// Whether a PowerShell binary was found at all.
+    pub available: bool,
+}
+
+/// The two shell-integration features, each a fenced `$PROFILE` block.
+fn feature_blocks(feature: &str) -> Result<(String, &'static str, &'static str), String> {
+    match feature {
+        "multiline" => Ok((
+            crate::shellint::multiline_snippet(),
+            crate::shellint::MULTILINE_BEGIN,
+            crate::shellint::MULTILINE_END,
+        )),
+        "cwd" => Ok((
+            crate::shellint::cwd_snippet(),
+            crate::shellint::CWD_BEGIN,
+            crate::shellint::CWD_END,
+        )),
+        other => Err(format!("unknown shell-integration feature: {other}")),
+    }
+}
+
+fn resolve_pwsh() -> Option<std::path::PathBuf> {
+    which::which("pwsh")
+        .or_else(|_| which::which("powershell"))
+        .ok()
+}
+
+/// Ask pwsh itself for the current-user/current-host profile path (robust
+/// against OneDrive Documents redirection etc.).
+fn pwsh_profile_path(pwsh: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let out = std::process::Command::new(pwsh)
+        .args([
+            "-NoProfile",
+            "-NoLogo",
+            "-NonInteractive",
+            "-Command",
+            "$PROFILE.CurrentUserCurrentHost",
+        ])
+        .output()
+        .map_err(|e| format!("could not run pwsh: {e}"))?;
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if path.is_empty() {
+        return Err("pwsh returned an empty $PROFILE path".into());
+    }
+    Ok(std::path::PathBuf::from(path))
+}
+
+/// Report whether a shell-integration block is installed, without modifying
+/// anything. Drives the confirmation dialog.
+#[tauri::command]
+pub fn pwsh_integration_status(feature: String) -> Result<PwshIntegrationInfo, String> {
+    let (snippet, begin, _end) = feature_blocks(&feature)?;
+    let Some(pwsh) = resolve_pwsh() else {
+        return Ok(PwshIntegrationInfo {
+            profile_path: None,
+            installed: false,
+            up_to_date: false,
+            snippet,
+            available: false,
+        });
+    };
+    let path = pwsh_profile_path(&pwsh)?;
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let installed = crate::shellint::is_installed(&existing, begin);
+    // Up to date iff the current block is already present verbatim (a refresh
+    // would be a no-op). A stale/older block reports installed=true but
+    // up_to_date=false so the UI can offer an update.
+    let up_to_date = installed && existing.contains(snippet.trim_end());
+    Ok(PwshIntegrationInfo {
+        profile_path: Some(path.to_string_lossy().into_owned()),
+        installed,
+        up_to_date,
+        snippet,
+        available: true,
+    })
+}
+
+/// Append (or refresh) a shell-integration block in the user's pwsh `$PROFILE`
+/// (idempotent). The frontend MUST show the snippet and get explicit
+/// confirmation first — this edits a file the user owns.
+#[tauri::command]
+pub fn install_pwsh_integration(feature: String) -> Result<PwshIntegrationInfo, String> {
+    let (snippet, begin, end) = feature_blocks(&feature)?;
+    let Some(pwsh) = resolve_pwsh() else {
+        return Err("PowerShell (pwsh/powershell) not found on PATH".into());
+    };
+    let path = pwsh_profile_path(&pwsh)?;
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    // Upgrade in place: strip any prior (possibly older) block, then append the
+    // current one. Idempotent when already up to date; refreshes an old block.
+    let updated = crate::shellint::with_block(
+        &crate::shellint::without_block(&existing, begin, end),
+        &snippet,
+        begin,
+    );
+    if updated != existing {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("profile dir error: {e}"))?;
+        }
+        std::fs::write(&path, updated).map_err(|e| format!("profile write error: {e}"))?;
+    }
+    Ok(PwshIntegrationInfo {
+        profile_path: Some(path.to_string_lossy().into_owned()),
+        installed: true,
+        up_to_date: true,
+        snippet,
+        available: true,
+    })
 }
 
 // ---------------------------------------------------- control API (M2.2)

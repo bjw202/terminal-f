@@ -359,6 +359,139 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
     report.checks.pasteClipboardRead = clipKind !== "error";
     step(`paste-drop:${report.checks.pasteDrop} clip-read:${clipKind}`);
 
+    // -- smart copy to clipboard (Ctrl+C / Ctrl+Shift+C) ---------------------
+    // Render a marker into the pane's buffer (local write, no PTY), select all,
+    // copy via the smart-copy path, then read it back through paste_clipboard.
+    // Restore the user's clipboard afterward (paste.rs save/restore discipline).
+    const copyPane = ctl.activePaneId();
+    const copyView = terms.getView(copyPane);
+    if (copyView) {
+      const marker = `TERMF_COPY_${Date.now()}`;
+      const savedClip = await ipc.pasteClipboard().catch(() => ({ kind: "none" as const }));
+      copyView.term.write(marker);
+      await sleep(150);
+      copyView.term.selectAll();
+      const copied = await terms.copySelection(copyPane);
+      await sleep(150);
+      const back = await ipc.pasteClipboard().catch(() => ({ kind: "none" as const, data: "" }));
+      report.checks.copyRoundTrip =
+        copied && back.kind === "text" && "data" in back && back.data.includes(marker);
+      // restore whatever text was there before (image/none: leave as-is)
+      if (savedClip.kind === "text" && "data" in savedClip) {
+        await ipc.copyToClipboard(savedClip.data).catch(() => {});
+      }
+      step(`copy-round-trip:${report.checks.copyRoundTrip}`);
+
+      // -- OSC 52 clipboard write (how TUIs like Claude Code copy) -----------
+      // Emit ESC]52;c;<base64>BEL into the buffer; the OSC handler must decode
+      // it and write to the OS clipboard. Verifies the fix for "copy inside
+      // Claude Code pastes stale content" without needing Claude Code itself.
+      const oscMarker = `TERMF_OSC52_${Date.now()}`;
+      const oscB64 = btoa(oscMarker);
+      const savedOsc = await ipc.pasteClipboard().catch(() => ({ kind: "none" as const }));
+      copyView.term.write(`\x1b]52;c;${oscB64}\x07`);
+      await sleep(300); // let the handler's async copy_to_clipboard land
+      const oscBack = await ipc.pasteClipboard().catch(() => ({ kind: "none" as const, data: "" }));
+      report.checks.osc52Copy =
+        oscBack.kind === "text" && "data" in oscBack && oscBack.data === oscMarker;
+      if (savedOsc.kind === "text" && "data" in savedOsc) {
+        await ipc.copyToClipboard(savedOsc.data).catch(() => {});
+      }
+      step(`osc52-copy:${report.checks.osc52Copy}`);
+    }
+
+    // -- multiline newline chord logic (Ctrl+Enter / Shift+Enter) ------------
+    // Pure decision helper only. Real key delivery + Korean IME commit ordering
+    // needs a real device (ADR-010: synthetic key events validate listener
+    // logic, not delivery), so that stays a manual verification item.
+    type ChordEv = Parameters<typeof terms.newlineChordFor>[0];
+    const mk = (o: Partial<ChordEv>): ChordEv => ({
+      key: "Enter",
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      metaKey: false,
+      ...o,
+    });
+    report.checks.multilineChord =
+      terms.newlineChordFor(mk({ ctrlKey: true })) === "send" &&
+      terms.newlineChordFor(mk({ shiftKey: true })) === "send" &&
+      terms.newlineChordFor(mk({ ctrlKey: true, isComposing: true })) === "defer" &&
+      terms.newlineChordFor(mk({ ctrlKey: true, keyCode: 229 })) === "defer" &&
+      terms.newlineChordFor(mk({})) === null && // plain Enter still submits
+      terms.newlineChordFor(mk({ ctrlKey: true, altKey: true })) === null &&
+      terms.newlineChordFor(mk({ ctrlKey: true, key: "a" })) === null;
+    step(`multiline-chord:${report.checks.multilineChord}`);
+
+    // -- pwsh Alt+Enter -> AddLine mechanism (multiline in a plain shell) -----
+    // Proves the \x1b\r we send for Ctrl/Shift+Enter reaches pwsh as Alt+Enter,
+    // so the opt-in PSReadLine binding (Alt+Enter -> AddLine) inserts a newline
+    // instead of ESC-clearing the line. Bind it live, then type `42+` <chord>
+    // `58` <Enter>: if AddLine fired, pwsh parses `42+`\n`58` as one expression
+    // = 100; if not, `42+` submits as a parse error and 100 never appears.
+    const psPane = ctl.activePaneId();
+    await ipc.writePane(psPane, "Set-PSReadLineKeyHandler -Chord 'Alt+Enter' -Function AddLine\r");
+    await sleep(1000);
+    await ipc.writePane(psPane, "42+");
+    await sleep(300);
+    await ipc.writePane(psPane, "\x1b\r"); // the exact sequence our chord sends
+    await sleep(300);
+    await ipc.writePane(psPane, "58\r");
+    await sleep(1200);
+    const psFlat = ctl.readBuffer(psPane).replace(/[\r\n]+/g, " ");
+    report.checks.pwshAltEnterAddLine = /(^|\D)100(\D|$)/.test(psFlat);
+    step(`pwsh-altenter-addline:${report.checks.pwshAltEnterAddLine}`);
+
+    // -- live cwd via OSC 9;9 shell integration (ADR-011) --------------------
+    // The new pane must open in the reported directory, not the pane's
+    // creation-time cwd. Actually cd to C:\Windows FIRST (so a real installed
+    // prompt block, if present, reports C:\Windows and is not clobbered), then
+    // also emit the OSC 9;9 explicitly (covers the no-profile-block case). C:\Windows
+    // is guaranteed to exist so split_pane's is_dir guard passes.
+    const cwdSrc = ctl.activePaneId();
+    await ipc.writePane(cwdSrc, "Set-Location C:\\Windows\r");
+    await sleep(800);
+    await ipc.writePane(
+      cwdSrc,
+      "[Console]::Write([char]27 + ']9;9;C:\\Windows' + [char]27 + '\\')\r",
+    );
+    await sleep(1500); // let the reader thread parse it into last_cwd
+    const panesPreCwd = ctl.paneIds().length;
+    await ctl.splitActive("row");
+    await sleep(3500); // new pwsh starts in the reported cwd
+    report.checks.liveCwdSplitCreated = ctl.paneIds().length === panesPreCwd + 1;
+    const cwdNew = ctl.activePaneId();
+    await ipc.writePane(cwdNew, '"CWDCHECK:$((Get-Location).Path)"\r');
+    await sleep(1500);
+    const cwdBuf = ctl.readBuffer(cwdNew).replace(/[\r\n]+/g, " ");
+    report.checks.liveCwdSplit = /CWDCHECK:C:\\Windows/i.test(cwdBuf);
+    step(`live-cwd-split:${report.checks.liveCwdSplit} created:${report.checks.liveCwdSplitCreated}`);
+
+    // -- live cwd via a PROMPT that returns OSC 9;9 (real emission path) ------
+    // The installed snippet prepends OSC 9;9 to the prompt's *return string*
+    // (like Windows Terminal / VS Code); a Console write inside prompt does NOT
+    // reliably reach the terminal under PSReadLine. Validate that exact
+    // mechanism end to end: fresh pane, install a return-string prompt, cd,
+    // split — the new pane must open in the cd'd directory.
+    await ctl.addWorkspace();
+    await sleep(4000); // fresh pwsh ready (loads default prompt)
+    const pp1 = ctl.activePaneId();
+    await ipc.writePane(
+      pp1,
+      'function prompt { "$([char]27)]9;9;$($PWD.ProviderPath)$([char]27)\\" + "PS> " }\r',
+    );
+    await sleep(1000);
+    await ipc.writePane(pp1, "Set-Location C:\\Windows\r"); // next prompt reports it
+    await sleep(2200);
+    await ctl.splitActive("row");
+    await sleep(3500);
+    const pp2 = ctl.activePaneId();
+    await ipc.writePane(pp2, '"CWD3:$($PWD.Path)"\r');
+    await sleep(1500);
+    const pb = ctl.readBuffer(pp2).replace(/[\r\n]+/g, " ");
+    report.checks.cwdPromptEmit = /CWD3:C:\\Windows/i.test(pb);
+    step(`cwd-prompt-emit:${report.checks.cwdPromptEmit} buf:${pb.slice(-90)}`);
+
     // -- workspace delete ----------------------------------------------------
     const before = (await ipc.getState()).workspaces.length;
     const res = await ipc.createWorkspace();
@@ -389,7 +522,13 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
     report.checks.templateStartupRan === true &&
     report.checks.pasteImage === true &&
     report.checks.pasteDrop === true &&
-    report.checks.pasteClipboardRead === true;
+    report.checks.pasteClipboardRead === true &&
+    report.checks.copyRoundTrip === true &&
+    report.checks.osc52Copy === true &&
+    report.checks.multilineChord === true &&
+    report.checks.pwshAltEnterAddLine === true &&
+    report.checks.liveCwdSplit === true &&
+    report.checks.cwdPromptEmit === true;
 
   try {
     await ipc.autotestReport(report);

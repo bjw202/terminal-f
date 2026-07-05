@@ -182,7 +182,52 @@ const solarizedLight: Theme = {
   },
 };
 
-export const THEMES: Theme[] = [mocha, latte, oneDark, solarizedLight];
+// Windows Terminal's "Campbell Powershell" scheme — the classic navy PowerShell
+// look (#012456 background) many Windows users expect. ANSI palette is the
+// official Campbell set; app chrome is derived to sit on the navy background.
+const campbellPowershell: Theme = {
+  id: "campbell-powershell",
+  label: "Campbell PowerShell (navy)",
+  ui: {
+    "app-bg": "#001b3d",
+    "panel-bg": "#012456",
+    "panel-border": "#0b3a70",
+    fg: "#cccccc",
+    muted: "#9db2cc",
+    faint: "#5f7ba0",
+    accent: "#3b78ff",
+    divider: "#0b3a70",
+    hover: "#0b3a70",
+    active: "#164a86",
+    focus: "#3b78ff",
+    error: "#e74856",
+    warn: "#f9f1a5",
+  },
+  term: {
+    background: "#012456",
+    foreground: "#cccccc",
+    cursor: "#cccccc",
+    selectionBackground: "#264f78",
+    black: "#0c0c0c",
+    red: "#c50f1f",
+    green: "#13a10e",
+    yellow: "#c19c00",
+    blue: "#0037da",
+    magenta: "#881798",
+    cyan: "#3a96dd",
+    white: "#cccccc",
+    brightBlack: "#767676",
+    brightRed: "#e74856",
+    brightGreen: "#16c60c",
+    brightYellow: "#f9f1a5",
+    brightBlue: "#3b78ff",
+    brightMagenta: "#b4009e",
+    brightCyan: "#61d6d6",
+    brightWhite: "#f2f2f2",
+  },
+};
+
+export const THEMES: Theme[] = [mocha, latte, oneDark, solarizedLight, campbellPowershell];
 export const DEFAULT_THEME_ID = mocha.id;
 
 let current: Theme = mocha;

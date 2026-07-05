@@ -56,6 +56,8 @@ export interface UiPrefs {
   theme?: string;
   fontSize?: number;
   sidebar?: { collapsed?: boolean; width?: number };
+  /** Copy selection to clipboard automatically on select (default off). */
+  copyOnSelect?: boolean;
 }
 
 export type Lifecycle = "starting" | "running" | "exited" | "closing";

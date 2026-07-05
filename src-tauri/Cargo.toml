@@ -24,6 +24,7 @@ interprocess = "2"
 base64 = "0.22"
 arboard = "3"
 png = "0.17"
+tauri-plugin-opener = "2"
 
 [[bin]]
 name = "terminal-f"

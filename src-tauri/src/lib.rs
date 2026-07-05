@@ -32,6 +32,7 @@ pub fn current_rss_bytes() -> u64 {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -163,6 +164,7 @@ pub fn run() {
             commands::save_pasted_image,
             commands::paste_clipboard,
             commands::copy_to_clipboard,
+            commands::open_external_url,
             commands::pwsh_integration_status,
             commands::install_pwsh_integration,
             commands::resize_pty,

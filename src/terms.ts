@@ -8,6 +8,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import * as ipc from "./ipc";
 import { currentTheme } from "./themes";
 import type { PaneId } from "./types";
@@ -19,12 +20,31 @@ let fontSize = 14;
 // classic X11/terminal behaviour some users expect.
 let copyOnSelect = false;
 
+// Ctrl/Cmd+click on a linkified URL in terminal output opens it in the browser.
+// The web-links addon underlines URLs on hover; the modifier gate keeps plain
+// click free for text selection. On (persisted in uiPrefs; default on).
+let openUrlOnClick = true;
+
 export function currentFontSize(): number {
   return fontSize;
 }
 
 export function setCopyOnSelect(on: boolean): void {
   copyOnSelect = on;
+}
+
+export function setOpenUrlOnClick(on: boolean): void {
+  openUrlOnClick = on;
+}
+
+/** Whether a link-activation mouse event should open the URL: the feature must
+ *  be enabled and the click must carry Ctrl (or Cmd on macOS). Pure — the
+ *  web-links handler and the autotest both use this. */
+export function shouldActivateLink(
+  ev: { ctrlKey?: boolean; metaKey?: boolean },
+  enabled: boolean,
+): boolean {
+  return enabled && !!(ev.ctrlKey || ev.metaKey);
 }
 
 /** Decide what a keydown means for multiline input (single source of truth for
@@ -241,6 +261,15 @@ export function getOrCreateView(paneId: PaneId, opts: CreateOpts): PaneView {
   const serialize = new SerializeAddon();
   term.loadAddon(fit);
   term.loadAddon(serialize);
+  // Linkify http(s) URLs in output; Ctrl/Cmd+click opens them via the validated
+  // backend path (replaces the addon's default window.open). Auto-disposed by
+  // term.dispose(). Plain click passes through so text selection still works.
+  term.loadAddon(
+    new WebLinksAddon((event, uri) => {
+      if (!shouldActivateLink(event, openUrlOnClick)) return;
+      void ipc.openExternalUrl(uri).catch((e) => console.warn("[openUrl]", e));
+    }),
+  );
 
   const view: PaneView = {
     paneId,

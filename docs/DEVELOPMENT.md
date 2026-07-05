@@ -22,7 +22,9 @@ Phase B(템플릿) + 이미지 붙여넣기/파일 드롭 브리지 +
 UX①~④ 전부 완료: ①복사(스마트 Ctrl+C / Ctrl+Shift+C / 우클릭 / copy-on-select
 / OSC 52) + ②Ctrl+Enter 멀티라인(IME 순서 안전 + pwsh Alt+Enter opt-in) +
 ③라이브 cwd(OSC 9;9 셸 통합, ADR-011) + ④Campbell PowerShell 테마.
-config schemaVersion **7**. Rust 테스트 89개(scan_cwd 6 / shellint 7 포함), autotest 29개 검사. ADR-001~011.
+③라이브 cwd 위에 URL Ctrl+클릭 열기(web-links addon + 스킴 화이트리스트,
+ADR-012)까지. config schemaVersion **7**. Rust 테스트 92개(scan_cwd 6 / shellint 7 /
+is_safe_external_url 3 포함), autotest 31개 검사. ADR-001~012.
 
 ---
 
@@ -176,6 +178,7 @@ cd src-tauri; cargo run --bin bench -- --soak-secs 600
 | TUI(클로드코드/vim/tmux) 안에서 복사한 게 클립보드에 안 들어감 | 그 TUI들은 OSC 52(`ESC]52;c;<base64>`)로 클립보드 쓰기를 요청하는데 xterm.js는 OSC 52를 기본 무시함. `terms.ts`에서 `term.parser.registerOscHandler(52, …)`로 디코드→`copy_to_clipboard`. 읽기(`?`)는 거부(클립보드 탈취 방지) |
 | 조합 중/직후 Shift+Enter 시 마지막 한글이 다음 줄로 밀림 | ①setTimeout 별도 전송=xterm 조합텍스트 전달과 레이스 ②`onData`에 붙이되 defer를 `ev.isComposing`으로만 판정=**Chromium은 Enter keydown이 compositionend 직후 isComposing=false로 옴** → 즉시전송 경로 탐. **해결: composition 상태 직접 추적**(`compositionstart/end`→`composing`+`awaitingComposedData`), keydown이 조합중/직후면 defer해 `onData`가 확정텍스트 뒤 `data+"\x1b\r"` 원자결합. IME 순서는 합성이벤트로 검증 불가→실기기 필수 |
 | split한 새 pane이 원본의 현재 디렉터리가 아니라 처음 열린 곳에서 열림 | pwsh `Set-Location`은 프로세스 CWD 안 바꿈 → OSC 9;9 셸 통합으로 해결(ADR-011). reader가 `scan_cwd`로 `last_cwd` 추적, split_pane이 `pane_live_cwd` 우선. OSC가 화면에 찍히면 프론트 `registerOscHandler(9, d=>d.startsWith("9;"))` 확인. 설치 후 새 pane 필요 |
+| 출력의 URL을 클릭해도 안 열림 / 위험한 스킴이 열릴까 걱정 | web-links addon 핸들러가 `shouldActivateLink`(Ctrl/Cmd 필수)로 게이트 → 평클릭은 선택. 열기는 백엔드 `open_external_url`가 `is_safe_external_url`로 http/https만 통과, tauri-plugin-opener(ShellExecute)로 열어 쿼리 `&` 안전. `cmd /c start`·`window.open` 쓰지 말 것(ADR-012) |
 | cwd 셸통합 설치했는데 split이 여전히 안 따라감 | **프롬프트 함수 안에서 `[Console]::Write`로 OSC를 내보내면 PSReadLine 렌더링 경로에서 PTY로 안 나감**. OSC는 프롬프트의 **반환 문자열에 prepend**해야 함(`return $osc + $base`, WT/VSCode 방식). autotest는 파서(직접 주입)뿐 아니라 프롬프트 반환 방출(`cwdPromptEmit`)까지 검증 |
 | 일반 pwsh 프롬프트에서 Ctrl/Shift+Enter 줄바꿈 안 됨 | `\x1b\r`을 pwsh는 ESC(줄 취소)+Enter로 봄. 단 그 시퀀스는 pwsh엔 **Alt+Enter**로 도달하고 Alt+Enter는 언바운드 → opt-in `$PROFILE` 스니펫(shellint.rs, `Set-PSReadLineKeyHandler -Chord 'Alt+Enter' -Function AddLine`)으로 해결. win32-input-mode(WT 방식)는 입력 파이프라인 전면 개편이라 회피. **실전 함정: (1) `$PROFILE`이 OneDrive로 리다이렉트(`OneDrive\문서\PowerShell\...`)되고 폴더가 없을 수 있음 → install은 `create_dir_all` 필수(이미 함). (2) 팔레트 명령을 실제로 실행해야 설치됨(앱 재빌드만으론 안 됨). (3) 설치 후 반드시 **새 pane**을 열어야 프로필 로드됨. 진단: 새 pane에서 `(Get-PSReadLineKeyHandler -Chord Alt+Enter).Function`이 `AddLine`이어야 정상.** |
 

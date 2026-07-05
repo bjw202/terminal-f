@@ -492,6 +492,28 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
     report.checks.cwdPromptEmit = /CWD3:C:\\Windows/i.test(pb);
     step(`cwd-prompt-emit:${report.checks.cwdPromptEmit} buf:${pb.slice(-90)}`);
 
+    // -- URL Ctrl+click: modifier gate (pure) --------------------------------
+    // Pure decision helper only (like multilineChord). Real mouse-click ->
+    // browser-open is a manual verification item.
+    report.checks.urlOpenGate =
+      terms.shouldActivateLink({ ctrlKey: true }, true) === true &&
+      terms.shouldActivateLink({ metaKey: true }, true) === true &&
+      terms.shouldActivateLink({}, true) === false && // plain click: no open
+      terms.shouldActivateLink({ ctrlKey: true }, false) === false; // feature off
+    step(`url-open-gate:${report.checks.urlOpenGate}`);
+
+    // -- URL open: backend rejects non-http(s) (no browser launched) ---------
+    // Only the REJECT path is exercised so autotest never spawns a browser.
+    const rejects = async (u: string) =>
+      ipc
+        .openExternalUrl(u)
+        .then(() => false)
+        .catch(() => true);
+    report.checks.urlRejectsUnsafe =
+      (await rejects("javascript:alert(1)")) &&
+      (await rejects("file:///C:/Windows/System32/calc.exe"));
+    step(`url-rejects-unsafe:${report.checks.urlRejectsUnsafe}`);
+
     // -- workspace delete ----------------------------------------------------
     const before = (await ipc.getState()).workspaces.length;
     const res = await ipc.createWorkspace();
@@ -528,7 +550,9 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
     report.checks.multilineChord === true &&
     report.checks.pwshAltEnterAddLine === true &&
     report.checks.liveCwdSplit === true &&
-    report.checks.cwdPromptEmit === true;
+    report.checks.cwdPromptEmit === true &&
+    report.checks.urlOpenGate === true &&
+    report.checks.urlRejectsUnsafe === true;
 
   try {
     await ipc.autotestReport(report);

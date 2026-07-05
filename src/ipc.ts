@@ -90,6 +90,11 @@ export const pasteClipboard = () =>
 // selection / Ctrl+Shift+C / right-click copy). Written in Rust via arboard.
 export const copyToClipboard = (text: string) => invoke<void>("copy_to_clipboard", { text });
 
+// Open an http/https URL (Ctrl+click on a linkified URL in terminal output) in
+// the OS default browser. The backend validates the scheme and rejects anything
+// that is not http(s), so this rejects for e.g. javascript:/file: URLs.
+export const openExternalUrl = (url: string) => invoke<void>("open_external_url", { url });
+
 // Opt-in pwsh $PROFILE shell integration: status + install for a named feature
 // ("multiline" = Alt+Enter->AddLine, "cwd" = OSC 9;9 prompt reporter). Install
 // edits the user's $PROFILE, so the UI confirms with the snippet first.

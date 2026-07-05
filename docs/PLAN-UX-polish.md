@@ -259,6 +259,12 @@ themes.ts THEMES에 추가한다. 공식 팔레트:
 1. **버퍼 검색** (`Ctrl+Shift+F`, xterm search addon) — 긴 로그에서 필수.
 2. **셸 통합 확장** — ③의 OSC 기반 위에: 실행 중 명령을 페인 헤더에 표시,
    장시간 명령 완료 알림(비활성 워크스페이스면 사이드바 배지).
-3. **URL 클릭** (web-links addon) — 출력의 링크를 Ctrl+클릭으로 열기.
+3. ~~**URL 클릭** (web-links addon) — 출력의 링크를 Ctrl+클릭으로 열기.~~
+   ✅ **구현·검증 완료 (2026-07-06, [ADR-012](ADR-012-url-open-security.md))**.
+   web-links addon으로 http/https 링크화, Ctrl/Cmd+클릭 시 백엔드
+   `open_external_url`(스킴 화이트리스트 + tauri-plugin-opener ShellExecute)로
+   기본 브라우저에서 열기. 팔레트 "Links: …Ctrl+click to open URLs"로 토글
+   (기본 ON). Rust `is_safe_external_url` 단위 테스트 + autotest
+   `urlOpenGate`/`urlRejectsUnsafe`.
 4. **브로드캐스트 입력** (로드맵 M1 잔여) — 여러 페인에 동시 타이핑.
 5. **폰트 패밀리 설정** — 현재 크기만 조절 가능.

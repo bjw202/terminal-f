@@ -58,6 +58,8 @@ export interface UiPrefs {
   sidebar?: { collapsed?: boolean; width?: number };
   /** Copy selection to clipboard automatically on select (default off). */
   copyOnSelect?: boolean;
+  /** Ctrl/Cmd+click a URL in output to open it in the browser (default on). */
+  openUrlOnClick?: boolean;
 }
 
 export type Lifecycle = "starting" | "running" | "exited" | "closing";

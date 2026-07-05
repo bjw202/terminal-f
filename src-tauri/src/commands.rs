@@ -1046,6 +1046,40 @@ pub fn copy_to_clipboard(text: String) -> Result<(), String> {
     crate::paste::write_clipboard_text(&text)
 }
 
+// ---------------------------------------------------- open external URL (links)
+
+/// Whether `url` is safe to hand to the OS opener. The URL originates from
+/// terminal output (untrusted) via the web-links addon, so we allow ONLY
+/// http/https and reject everything else (`javascript:`, `file:`, `data:`, …),
+/// plus any control character or whitespace (defense in depth; the opener uses
+/// ShellExecute, not a shell, so query-string `&` is fine). Pure so it is unit
+/// tested.
+pub fn is_safe_external_url(url: &str) -> bool {
+    if url.is_empty() || url.len() > 4096 {
+        return false;
+    }
+    if url.chars().any(|c| c.is_control() || c == ' ') {
+        return false;
+    }
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Open an http/https URL from terminal output in the user's default browser.
+/// Ctrl+click on a linkified URL (frontend web-links addon) routes here. We
+/// validate the scheme, then delegate to tauri-plugin-opener (ShellExecute on
+/// Windows) — never a shell, so there is no argument-injection surface.
+#[tauri::command]
+pub fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    if !is_safe_external_url(&url) {
+        return Err("refused: only http(s) URLs may be opened".into());
+    }
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 // ------------------------------------------ shell integration: pwsh $PROFILE
 
 /// Status of an opt-in pwsh `$PROFILE` block (see shellint.rs). Returned for the
@@ -1400,4 +1434,39 @@ pub fn autotest_report(report: serde_json::Value) -> Result<String, String> {
 pub fn exit_app(app: tauri::AppHandle, state: State<'_, AppState>, code: i32) {
     state.registry.shutdown();
     app.exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_safe_external_url;
+
+    #[test]
+    fn accepts_http_and_https() {
+        assert!(is_safe_external_url("http://x"));
+        assert!(is_safe_external_url("https://a.com/p?q=1&r=2")); // query & is fine
+        assert!(is_safe_external_url("https://h:8080/p#frag"));
+        assert!(is_safe_external_url("HTTPS://X")); // scheme is case-insensitive
+        assert!(is_safe_external_url("https://xn--bcher-kva.example/path")); // punycode
+    }
+
+    #[test]
+    fn rejects_non_http_schemes() {
+        assert!(!is_safe_external_url("javascript:alert(1)"));
+        assert!(!is_safe_external_url("file:///C:/Windows/System32/calc.exe"));
+        assert!(!is_safe_external_url("ftp://host/x"));
+        assert!(!is_safe_external_url("data:text/html,<script>1</script>"));
+        assert!(!is_safe_external_url("vscode://x"));
+        assert!(!is_safe_external_url("//evil.com")); // scheme-relative
+    }
+
+    #[test]
+    fn rejects_empty_whitespace_control_and_overlong() {
+        assert!(!is_safe_external_url(""));
+        assert!(!is_safe_external_url("http://a b")); // embedded space
+        assert!(!is_safe_external_url("http://a\nb")); // newline / control
+        assert!(!is_safe_external_url("http://a\tb"));
+        assert!(!is_safe_external_url("http://a\x07b")); // BEL
+        let long = format!("https://x/{}", "a".repeat(5000));
+        assert!(!is_safe_external_url(&long));
+    }
 }

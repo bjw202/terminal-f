@@ -89,6 +89,14 @@ function toggleCopyOnSelect(): void {
   showStatus(`Copy-on-select ${next ? "enabled" : "disabled"}`);
 }
 
+function toggleOpenUrlOnClick(): void {
+  const next = !(uiPrefs.openUrlOnClick !== false); // default on -> first toggle turns off
+  uiPrefs.openUrlOnClick = next;
+  terms.setOpenUrlOnClick(next);
+  saveUiPrefs();
+  showStatus(`Ctrl+click to open URLs ${next ? "enabled" : "disabled"}`);
+}
+
 // Opt-in pwsh $PROFILE shell integration. Both features edit the user's profile,
 // so we show the exact snippet and confirm first, then require a fresh pane.
 //   - "multiline": Ctrl/Shift+Enter reach pwsh as Alt+Enter (unbound by
@@ -508,6 +516,11 @@ registerCommandProvider(() => [
     id: "copy.onSelect",
     title: `Copy: ${uiPrefs.copyOnSelect ? "Disable" : "Enable"} copy-on-select`,
     run: () => toggleCopyOnSelect(),
+  },
+  {
+    id: "links.toggleOpen",
+    title: `Links: ${uiPrefs.openUrlOnClick !== false ? "Disable" : "Enable"} Ctrl+click to open URLs`,
+    run: () => toggleOpenUrlOnClick(),
   },
   {
     id: "shell.pwshMultiline",
@@ -1097,10 +1110,12 @@ async function boot(): Promise<void> {
     fontSize: typeof snap.ui?.fontSize === "number" ? snap.ui.fontSize : undefined,
     sidebar: typeof snap.ui?.sidebar === "object" && snap.ui.sidebar ? snap.ui.sidebar : {},
     copyOnSelect: snap.ui?.copyOnSelect === true,
+    openUrlOnClick: snap.ui?.openUrlOnClick !== false, // default on when unset
   };
   setTheme(themeById(uiPrefs.theme));
   if (uiPrefs.fontSize) terms.applyTerminalOptions({ fontSize: uiPrefs.fontSize });
   terms.setCopyOnSelect(uiPrefs.copyOnSelect === true);
+  terms.setOpenUrlOnClick(uiPrefs.openUrlOnClick !== false);
   refreshSidebar();
   const target = snap.activeWorkspaceId ?? metas[0]?.id;
   if (target) await switchTo(target);

@@ -1145,6 +1145,26 @@ fn pwsh_profile_path(pwsh: &std::path::Path) -> Result<std::path::PathBuf, Strin
     Ok(std::path::PathBuf::from(path))
 }
 
+/// `$PROFILE` path resolution spawns a pwsh subprocess, whose cold start can be
+/// 1s+ on a fresh machine — and the status query runs before the confirm dialog
+/// appears, so a naive re-spawn per click makes the menu feel unresponsive
+/// (and install would spawn a second time). The path is stable for the app's
+/// lifetime, so resolve once and cache it. Keyed by pwsh path so a PATH change
+/// (rare) still re-resolves.
+static PROFILE_PATH_CACHE: std::sync::Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>> =
+    std::sync::Mutex::new(None);
+
+fn cached_profile_path(pwsh: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if let Some((cached_pwsh, cached_profile)) = PROFILE_PATH_CACHE.lock().unwrap().as_ref() {
+        if cached_pwsh == pwsh {
+            return Ok(cached_profile.clone());
+        }
+    }
+    let profile = pwsh_profile_path(pwsh)?;
+    *PROFILE_PATH_CACHE.lock().unwrap() = Some((pwsh.to_path_buf(), profile.clone()));
+    Ok(profile)
+}
+
 /// Report whether a shell-integration block is installed, without modifying
 /// anything. Drives the confirmation dialog.
 #[tauri::command]
@@ -1159,7 +1179,7 @@ pub fn pwsh_integration_status(feature: String) -> Result<PwshIntegrationInfo, S
             available: false,
         });
     };
-    let path = pwsh_profile_path(&pwsh)?;
+    let path = cached_profile_path(&pwsh)?;
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let installed = crate::shellint::is_installed(&existing, begin);
     // Up to date iff the current block is already present verbatim (a refresh
@@ -1184,7 +1204,7 @@ pub fn install_pwsh_integration(feature: String) -> Result<PwshIntegrationInfo, 
     let Some(pwsh) = resolve_pwsh() else {
         return Err("PowerShell (pwsh/powershell) not found on PATH".into());
     };
-    let path = pwsh_profile_path(&pwsh)?;
+    let path = cached_profile_path(&pwsh)?;
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     // Upgrade in place: strip any prior (possibly older) block, then append the
     // current one. Idempotent when already up to date; refreshes an old block.

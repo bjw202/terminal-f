@@ -108,6 +108,10 @@ async function installShellIntegration(
 ): Promise<void> {
   let info;
   try {
+    // Resolving $PROFILE spawns pwsh, whose cold start can be 1s+ on a fresh
+    // machine — show immediate feedback so the menu doesn't feel dead while we
+    // wait for the confirm dialog. (The path is cached after the first call.)
+    showStatus("Checking PowerShell profile…");
     info = await ipc.pwshIntegrationStatus(feature);
   } catch (e) {
     showStatus(String(e), true);

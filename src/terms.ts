@@ -15,6 +15,22 @@ import type { PaneId } from "./types";
 
 let fontSize = 14;
 
+// IME output-buffering guards (see writeOutput / the composition listeners).
+// While a Korean/IME syllable is composing we hold PTY output in a per-view
+// buffer instead of writing it, because every xterm render calls
+// CompositionHelper.updateCompositionElements() and repositions the hidden IME
+// textarea to the cursor. A pane streaming output (e.g. Claude Code printing
+// dozens of times a second) would yank the textarea mid-composition and corrupt
+// the syllable, since the final commit is textarea.value.substring-based and so
+// sensitive to that geometry churn. We flush on compositionend. Two safety
+// valves keep a stuck-open composition from freezing output forever:
+//   - watchdog: force-flush if output has been held this long, and give up
+//     buffering until the next compositionstart.
+//   - size cap: force-flush if the held buffer grows past this (runaway
+//     process memory guard). Buffering stays armed after a size-cap flush.
+const OUTPUT_WATCHDOG_MS = 1000;
+const OUTPUT_BUFFER_CAP = 256 * 1024;
+
 // Copy-on-select: when on, completing a selection copies it to the clipboard
 // automatically (opt-in, persisted in uiPrefs; default off). Mirrors the
 // classic X11/terminal behaviour some users expect.
@@ -91,6 +107,13 @@ export interface PaneView {
   lastSeq: number;
   resizeObserver: ResizeObserver;
   exitShown: boolean;
+  /** IME output-buffering state (see writeOutput and OUTPUT_WATCHDOG_MS).
+   * `imeBuffering` gates whether output is held; `outBuf`/`outBufLen` accumulate
+   * the held chunks; `outWatchdog` is the force-flush timer. */
+  imeBuffering: boolean;
+  outBuf: string[];
+  outBufLen: number;
+  outWatchdog: ReturnType<typeof setTimeout> | null;
 }
 
 export interface VisualSnapshot {
@@ -108,6 +131,56 @@ export function getView(paneId: PaneId): PaneView | undefined {
 
 export function allViews(): PaneView[] {
   return [...views.values()];
+}
+
+/** Sole output sink for PTY output and exit banners: while the pane's IME is
+ * composing (see OUTPUT_WATCHDOG_MS) the data is held in a per-view buffer and
+ * flushed on compositionend, so xterm's per-render textarea repositioning can't
+ * corrupt the in-progress syllable. Otherwise it writes straight through.
+ * Order invariant: once the buffer is non-empty we never write directly — every
+ * chunk goes through the buffer until it is flushed, preserving output order. */
+export function writeOutput(paneId: PaneId, data: string): void {
+  const view = views.get(paneId);
+  if (!view) return; // pane not mounted; ring buffer replay covers it later
+  if (view.imeBuffering) appendOutput(view, data);
+  else view.term.write(data);
+}
+
+/** Hold a chunk in the view's IME buffer; arm the watchdog on the first chunk
+ * and force-flush (keeping buffering armed) if the held size passes the cap. */
+function appendOutput(view: PaneView, data: string): void {
+  const wasEmpty = view.outBuf.length === 0;
+  view.outBuf.push(data);
+  view.outBufLen += data.length;
+  if (wasEmpty) startOutputWatchdog(view);
+  if (view.outBufLen > OUTPUT_BUFFER_CAP) flushOutput(view); // runaway guard
+}
+
+/** Write the held buffer to the terminal in one shot and clear it + the
+ * watchdog. Leaves `imeBuffering` untouched — the caller decides whether to
+ * keep buffering (size-cap flush) or stop (compositionend / blur / watchdog). */
+function flushOutput(view: PaneView): void {
+  if (view.outWatchdog !== null) {
+    clearTimeout(view.outWatchdog);
+    view.outWatchdog = null;
+  }
+  if (view.outBuf.length === 0) return;
+  const data = view.outBuf.join("");
+  view.outBuf = [];
+  view.outBufLen = 0;
+  view.term.write(data);
+}
+
+/** Force-flush after OUTPUT_WATCHDOG_MS so a composition left open (no
+ * compositionend) can't stall output indefinitely; give up buffering for the
+ * rest of this composition (a fresh compositionstart re-arms it). */
+function startOutputWatchdog(view: PaneView): void {
+  if (view.outWatchdog !== null) return;
+  view.outWatchdog = setTimeout(() => {
+    view.outWatchdog = null;
+    flushOutput(view);
+    view.imeBuffering = false;
+  }, OUTPUT_WATCHDOG_MS);
 }
 
 interface CreateOpts {
@@ -285,6 +358,10 @@ export function getOrCreateView(paneId: PaneId, opts: CreateOpts): PaneView {
     lastSeq: 0,
     resizeObserver: new ResizeObserver(() => syncSize(view)),
     exitShown: false,
+    imeBuffering: false,
+    outBuf: [],
+    outBufLen: 0,
+    outWatchdog: null,
   };
 
   term.open(body);
@@ -389,10 +466,14 @@ export function getOrCreateView(paneId: PaneId, opts: CreateOpts): PaneView {
   term.textarea?.addEventListener("compositionstart", () => {
     composing = true;
     awaitingComposedData = false;
+    view.imeBuffering = true; // hold output so renders can't move the IME textarea
   });
   term.textarea?.addEventListener("compositionend", () => {
     composing = false;
     awaitingComposedData = true;
+    // Composition done: release the held output in one write and stop buffering.
+    view.imeBuffering = false;
+    flushOutput(view);
     // Fallback: onData normally clears these within a tick. If the composition
     // delivered no text (aborted), flush any pending newline and clear state so
     // it can't attach to unrelated later input. 120ms is well past onData's
@@ -404,6 +485,18 @@ export function getOrCreateView(paneId: PaneId, opts: CreateOpts): PaneView {
         void sendNewline();
       }
     }, 120);
+  });
+  // Blur defense: if the textarea loses focus mid-composition the browser may
+  // never fire compositionend, leaving composing/awaitingComposedData stuck true
+  // — which would kill the Ctrl+C/V shortcuts (they bail while composing). Reset
+  // the composition flags, drop any pending newline (do NOT send it — the user
+  // moved focus, not committed), and release the held output.
+  term.textarea?.addEventListener("blur", () => {
+    composing = false;
+    awaitingComposedData = false;
+    pendingNewline = false;
+    view.imeBuffering = false;
+    flushOutput(view);
   });
 
   // Copy-on-select (opt-in): copy without deselecting so the highlight stays.
@@ -528,6 +621,10 @@ export function syncSize(view: PaneView): void {
 export function snapshotAndDispose(paneId: PaneId): void {
   const view = views.get(paneId);
   if (!view) return;
+  // Flush any IME-held output into the terminal so it lands in the snapshot;
+  // otherwise buffered chunks would be lost on unmount.
+  view.imeBuffering = false;
+  flushOutput(view);
   try {
     snapshots.set(paneId, {
       data: view.serialize.serialize({ scrollback: 1000 }),
@@ -543,6 +640,9 @@ export function snapshotAndDispose(paneId: PaneId): void {
 export function disposeView(paneId: PaneId): void {
   const view = views.get(paneId);
   if (!view) return;
+  if (view.outWatchdog !== null) clearTimeout(view.outWatchdog); // stop the IME flush timer
+  view.outBuf = []; // discard any held output; the terminal is going away
+  view.outBufLen = 0;
   view.resizeObserver.disconnect();
   view.term.dispose();
   view.el.remove();

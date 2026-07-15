@@ -319,7 +319,7 @@ function noteExitedSessions(sessions: SessionInfo[]): void {
     const view = terms.getView(s.paneId);
     if (view && s.state === "exited" && !view.exitShown) {
       view.exitShown = true;
-      view.term.write(`\r\n\x1b[31m[process exited (code ${s.exitCode ?? "?"})]\x1b[0m\r\n`);
+      terms.writeOutput(s.paneId, `\r\n\x1b[31m[process exited (code ${s.exitCode ?? "?"})]\x1b[0m\r\n`);
     }
   }
   updateHeaders();
@@ -1071,7 +1071,7 @@ void ipc.onPtyOutput((ev) => {
   // Output path: backend ring buffer -> batched event -> xterm.write.
   const view = terms.getView(ev.paneId);
   if (!view) return; // pane not mounted; ring buffer replay covers it later
-  view.term.write(ev.data);
+  terms.writeOutput(ev.paneId, ev.data); // routes through the IME output buffer
   view.lastSeq = ev.seq;
 });
 
@@ -1084,7 +1084,7 @@ void ipc.onPtyExit((ev) => {
   const view = terms.getView(ev.paneId);
   if (view && !view.exitShown) {
     view.exitShown = true;
-    view.term.write(`\r\n\x1b[31m[process exited (code ${ev.exitCode ?? "?"})]\x1b[0m\r\n`);
+    terms.writeOutput(ev.paneId, `\r\n\x1b[31m[process exited (code ${ev.exitCode ?? "?"})]\x1b[0m\r\n`);
   }
 });
 

@@ -423,6 +423,38 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
       terms.newlineChordFor(mk({ ctrlKey: true, key: "a" })) === null;
     step(`multiline-chord:${report.checks.multilineChord}`);
 
+    // -- IME output buffering (Korean composition safety) --------------------
+    // While a syllable is composing we hold PTY output so xterm's per-render
+    // repositioning of the hidden IME textarea can't corrupt the commit. Drive
+    // it with synthetic composition events: writeOutput during composition must
+    // NOT reach the buffer; compositionend must flush it. NOTE: synthetic
+    // CompositionEvents validate only our listener/buffer logic — the real IME
+    // key path (WebView2 composition, textarea.value offsets) needs a real
+    // device (§4), so correct Korean rendering under streaming stays a manual
+    // verification item.
+    const imePane = ctl.activePaneId();
+    const imeView = terms.getView(imePane);
+    const imeArea = imeView?.term.textarea;
+    if (imeArea) {
+      const imeMarker = `TERMF_IME_${Date.now()}`;
+      // Strip newlines before matching: the marker can straddle a terminal
+      // line-wrap if the cursor sits near the right edge (same pitfall as the
+      // long-path paste checks).
+      const imeBuf = () => ctl.readBuffer(imePane).replace(/\n/g, "");
+      imeArea.dispatchEvent(new CompositionEvent("compositionstart"));
+      terms.writeOutput(imePane, imeMarker);
+      await sleep(50); // give any errant write a chance to land before asserting
+      const heldDuringComposition = !imeBuf().includes(imeMarker);
+      imeArea.dispatchEvent(new CompositionEvent("compositionend"));
+      let flushed = false;
+      for (let i = 0; i < 20 && !flushed; i++) {
+        await sleep(50); // term.write is async; wait for the flush to render
+        flushed = imeBuf().includes(imeMarker);
+      }
+      report.checks.imeOutputBuffering = heldDuringComposition && flushed;
+    }
+    step(`ime-output-buffering:${report.checks.imeOutputBuffering}`);
+
     // -- pwsh Alt+Enter -> AddLine mechanism (multiline in a plain shell) -----
     // Proves the \x1b\r we send for Ctrl/Shift+Enter reaches pwsh as Alt+Enter,
     // so the opt-in PSReadLine binding (Alt+Enter -> AddLine) inserts a newline
@@ -548,6 +580,7 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
     report.checks.copyRoundTrip === true &&
     report.checks.osc52Copy === true &&
     report.checks.multilineChord === true &&
+    report.checks.imeOutputBuffering === true &&
     report.checks.pwshAltEnterAddLine === true &&
     report.checks.liveCwdSplit === true &&
     report.checks.cwdPromptEmit === true &&

@@ -1,6 +1,6 @@
 [package]
 name = "terminal-f"
-version = "0.1.0"
+version = "0.1.1"
 description = "Windows native terminal emulator core (M0)"
 edition = "2021"
 default-run = "terminal-f"

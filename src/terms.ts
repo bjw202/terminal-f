@@ -28,8 +28,17 @@ let fontSize = 14;
 //     buffering until the next compositionstart.
 //   - size cap: force-flush if the held buffer grows past this (runaway
 //     process memory guard). Buffering stays armed after a size-cap flush.
+//   - echo pass-through: output arriving within this window of the user's own
+//     input (onData -> PTY) is the echo/redraw of a just-committed syllable and
+//     must render immediately, even mid-composition — otherwise, in continuous
+//     Korean typing, the next syllable's compositionstart traps the previous
+//     syllable's echo, the cursor never advances, and the IME preview stacks
+//     over the uncommitted text at one cell. A single echo render is safe for
+//     the IME (idle-shell Korean typing always worked); it's the sustained
+//     streaming between commits that corrupts composition.
 const OUTPUT_WATCHDOG_MS = 1000;
 const OUTPUT_BUFFER_CAP = 256 * 1024;
+const ECHO_PASS_MS = 120;
 
 // Copy-on-select: when on, completing a selection copies it to the clipboard
 // automatically (opt-in, persisted in uiPrefs; default off). Mirrors the
@@ -109,11 +118,13 @@ export interface PaneView {
   exitShown: boolean;
   /** IME output-buffering state (see writeOutput and OUTPUT_WATCHDOG_MS).
    * `imeBuffering` gates whether output is held; `outBuf`/`outBufLen` accumulate
-   * the held chunks; `outWatchdog` is the force-flush timer. */
+   * the held chunks; `outWatchdog` is the force-flush timer; `lastInputTs`
+   * timestamps the last onData -> PTY write for the echo pass-through window. */
   imeBuffering: boolean;
   outBuf: string[];
   outBufLen: number;
   outWatchdog: ReturnType<typeof setTimeout> | null;
+  lastInputTs: number;
 }
 
 export interface VisualSnapshot {
@@ -136,14 +147,21 @@ export function allViews(): PaneView[] {
 /** Sole output sink for PTY output and exit banners: while the pane's IME is
  * composing (see OUTPUT_WATCHDOG_MS) the data is held in a per-view buffer and
  * flushed on compositionend, so xterm's per-render textarea repositioning can't
- * corrupt the in-progress syllable. Otherwise it writes straight through.
- * Order invariant: once the buffer is non-empty we never write directly — every
- * chunk goes through the buffer until it is flushed, preserving output order. */
+ * corrupt the in-progress syllable. Output within ECHO_PASS_MS of the user's
+ * own input passes straight through even mid-composition (it's the echo of a
+ * just-committed syllable — holding it stalls the cursor and stacks the IME
+ * preview over committed text). Otherwise it writes straight through.
+ * Order invariant: a pass-through write always flushes the held buffer first,
+ * so chunks never overtake earlier held output. */
 export function writeOutput(paneId: PaneId, data: string): void {
   const view = views.get(paneId);
   if (!view) return; // pane not mounted; ring buffer replay covers it later
-  if (view.imeBuffering) appendOutput(view, data);
-  else view.term.write(data);
+  if (view.imeBuffering && Date.now() - view.lastInputTs > ECHO_PASS_MS) {
+    appendOutput(view, data);
+    return;
+  }
+  flushOutput(view); // no-op unless an echo chunk is overtaking held output
+  view.term.write(data);
 }
 
 /** Hold a chunk in the view's IME buffer; arm the watchdog on the first chunk
@@ -362,6 +380,7 @@ export function getOrCreateView(paneId: PaneId, opts: CreateOpts): PaneView {
     outBuf: [],
     outBufLen: 0,
     outWatchdog: null,
+    lastInputTs: 0,
   };
 
   term.open(body);
@@ -383,6 +402,7 @@ export function getOrCreateView(paneId: PaneId, opts: CreateOpts): PaneView {
 
   // Input path: xterm onData -> writePane(paneId, data) -> backend PTY writer.
   term.onData((data) => {
+    view.lastInputTs = Date.now(); // opens the echo pass-through window (writeOutput)
     awaitingComposedData = false; // this chunk is (or follows) the committed text
     // A newline chord is pending from a composition: append it after the text,
     // atomically, so ordering is guaranteed without racing timers.

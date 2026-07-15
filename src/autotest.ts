@@ -435,12 +435,13 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
     const imePane = ctl.activePaneId();
     const imeView = terms.getView(imePane);
     const imeArea = imeView?.term.textarea;
-    if (imeArea) {
+    if (imeView && imeArea) {
       const imeMarker = `TERMF_IME_${Date.now()}`;
       // Strip newlines before matching: the marker can straddle a terminal
       // line-wrap if the cursor sits near the right edge (same pitfall as the
       // long-path paste checks).
       const imeBuf = () => ctl.readBuffer(imePane).replace(/\n/g, "");
+      imeView.lastInputTs = 0; // ensure the echo pass-through window is closed
       imeArea.dispatchEvent(new CompositionEvent("compositionstart"));
       terms.writeOutput(imePane, imeMarker);
       await sleep(50); // give any errant write a chance to land before asserting
@@ -451,7 +452,21 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
         await sleep(50); // term.write is async; wait for the flush to render
         flushed = imeBuf().includes(imeMarker);
       }
-      report.checks.imeOutputBuffering = heldDuringComposition && flushed;
+      // Echo pass-through: output landing right after the user's own input (the
+      // PTY echoing a just-committed syllable) must render immediately even
+      // while the next syllable is composing — holding it stalled the cursor
+      // and stacked the IME preview over committed text (real-device bug).
+      const echoMarker = `TERMF_ECHO_${Date.now()}`;
+      imeArea.dispatchEvent(new CompositionEvent("compositionstart"));
+      imeView.lastInputTs = Date.now(); // as if a syllable was just committed
+      terms.writeOutput(imePane, echoMarker);
+      let echoed = false;
+      for (let i = 0; i < 20 && !echoed; i++) {
+        await sleep(50);
+        echoed = imeBuf().includes(echoMarker);
+      }
+      imeArea.dispatchEvent(new CompositionEvent("compositionend"));
+      report.checks.imeOutputBuffering = heldDuringComposition && flushed && echoed;
     }
     step(`ime-output-buffering:${report.checks.imeOutputBuffering}`);
 

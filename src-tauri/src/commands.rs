@@ -194,6 +194,49 @@ pub fn set_workspace_color(
     Ok(metas)
 }
 
+/// 워크스페이스 시작 폴더 설정 커맨드의 반환값 (SPEC-WORKSPACE-ROOT-001 M2).
+/// 전체 `workspace`를 함께 반환하는 이유: 프론트엔드가 `main.ts:717`(rule repo
+/// default)과 `main.ts:1020`(모달 초기값)에서 `leaf.cwd`를 읽는다. metas만
+/// 반환하면 이 두 곳이 stale해진다.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetWorkspaceRootResult {
+    pub workspaces: Vec<WorkspaceMeta>,
+    pub workspace: Workspace,
+    pub rewritten: usize,
+}
+
+/// 워크스페이스 시작 폴더를 설정하거나(Some) 해제한다(None/공백). 유효한 폴더면
+/// 그 워크스페이스의 모든 `PaneLeaf.cwd`를 재작성한다 (R5). `ensure_sessions`를
+/// 호출하지 **않는다** — 띄울 세션이 없고, 기존 세션은 의도적으로 옛 cwd를
+/// 유지한다 (§D). 락 순서: store 락 → `set_root_dir` + 복제 + metas → 락 해제
+/// → persist (store→registry, 역전 금지). set_workspace_color와 동일한 규율이다.
+#[tauri::command]
+pub fn set_workspace_root(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    root_dir: Option<String>,
+) -> Result<SetWorkspaceRootResult, String> {
+    let (workspace, workspaces, rewritten) = {
+        let mut store = state.store.lock().unwrap();
+        // VALIDATE-BEFORE-MUTATE는 set_root_dir 내부에서 보장된다.
+        let rewritten = store.set_root_dir(&workspace_id, root_dir)?;
+        let workspace = store
+            .get(&workspace_id)
+            .ok_or_else(|| format!("workspace not found: {workspace_id}"))?
+            .clone();
+        let workspaces = store.metas();
+        (workspace, workspaces, rewritten)
+    };
+    // 락 해제 후 persist (락을 잡은 채 persist 금지).
+    persist(&state);
+    Ok(SetWorkspaceRootResult {
+        workspaces,
+        workspace,
+        rewritten,
+    })
+}
+
 /// Replace persisted UI preferences (theme, sidebar state, font).
 #[tauri::command]
 pub fn set_ui_prefs(state: State<'_, AppState>, ui: serde_json::Value) {
@@ -308,6 +351,11 @@ pub fn split_pane(
         // split opens where the user actually is; fall back to the leaf's
         // creation-time cwd when no integration/report exists. Guard on it
         // being a real directory so a stale/garbage report can't break spawn.
+        //
+        // 워크스페이스 시작 폴더(root_dir, SPEC-WORKSPACE-ROOT-001)는 이 live-cwd
+        // 상속을 **의도적으로 재정의하지 않는다** (ADR-011, spec.md §E 비목표).
+        // 사용자가 셸에서 cd로 이동한 뒤 팬을 분할하면, 새 팬은 시작 폴더가 아니라
+        // 현재 작업 위치에서 열리는 것이 의도된 동작이다.
         let cwd = state
             .registry
             .pane_live_cwd(&pane_id)
@@ -1230,6 +1278,26 @@ pub fn install_pwsh_integration(feature: String) -> Result<PwshIntegrationInfo, 
 
 // ---------------------------------------------------- control API (M2.2)
 
+/// `listWorkspaces` 파이프 응답을 만든다. `WorkspaceMeta`에 `root_dir`이 실려
+/// 있어도 파이프 경계에서 제거해, 인증된 외부 브로커에 사용자의 절대 경로가
+/// opt-in 없이 노출되지 않게 한다 (§A.4.2, AC-12, spec.md §C 컨트롤 API 경로
+/// 비노출). 브로커 표면은 본 SPEC 이전과 동일하다 (id / name / color만).
+/// `model.rs:47`의 `allow_observe` 기본 차단 자세와 `DEVELOPMENT.md:207`
+/// 불변식 3(게이트 우회 금지)을 그대로 보존한다.
+fn pipe_list_workspaces_value(metas: &[WorkspaceMeta]) -> serde_json::Value {
+    let items: Vec<serde_json::Value> = metas
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "name": m.name,
+                "color": m.color,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(items)
+}
+
 /// Route an authenticated control-API method to backend capabilities. Called
 /// by the pipe server per request; every capability reuses the same gates as
 /// the UI (do_inject, allow_observe), so the pipe cannot bypass them.
@@ -1245,7 +1313,9 @@ pub fn handle_pipe_method(
     match method {
         "listWorkspaces" => {
             let store = state.store.lock().unwrap();
-            Ok(serde_json::to_value(store.metas()).unwrap_or_default())
+            // 파이프 경계에서 root_dir을 제거한다 — metas()를 그대로 직렬화하면
+            // 인증된 외부 브로커에 사용자의 절대 경로가 opt-in 없이 노출된다.
+            Ok(pipe_list_workspaces_value(&store.metas()))
         }
         "listPanes" => {
             let store = state.store.lock().unwrap();
@@ -1459,6 +1529,60 @@ pub fn exit_app(app: tauri::AppHandle, state: State<'_, AppState>, code: i32) {
 #[cfg(test)]
 mod tests {
     use super::is_safe_external_url;
+
+    // ---- M2: 커맨드 계층 + 파이프 경계 root_dir 제거 (SPEC-WORKSPACE-ROOT-001) ----
+
+    /// AC-12(차단): `handle_pipe_method`의 `listWorkspaces` 반환 payload에는
+    /// `rootDir` 키가 없어야 한다 — `WorkspaceMeta`에 root_dir이 실려 있어도
+    /// 파이프 경계에서 제거된다. 짝으로 프론트엔드 경로(`metas()` 직접 직렬화)에는
+    /// root_dir이 실려 있음을 단언해, "필드를 그냥 빼버린" 회귀와 구분한다.
+    #[test]
+    fn pipe_list_workspaces_omits_root_dir() {
+        use crate::state::WorkspaceStore;
+        let mut store = WorkspaceStore::with_default();
+        let id = store.workspaces[0].id.clone();
+        // C:\Windows 는 실재가 보장된 폴더 (M1 테스트와 동일 규약).
+        store.set_root_dir(&id, Some("C:\\Windows".into())).unwrap();
+        let metas = store.metas();
+
+        // 프론트엔드 경로: metas()를 그대로 직렬화하면 rootDir이 실린다 (R11 의존).
+        let front = serde_json::to_value(&metas).unwrap();
+        assert_eq!(
+            front[0]["rootDir"], "C:\\Windows",
+            "프론트엔드(metas 직접)에는 rootDir이 실린다"
+        );
+
+        // 파이프 경계: root_dir이 제거된다 (AC-12).
+        let pipe = super::pipe_list_workspaces_value(&metas);
+        assert!(
+            pipe[0].get("rootDir").is_none(),
+            "파이프 payload에 rootDir 키가 없어야 한다"
+        );
+        // 남은 표면은 본 SPEC 이전과 동일 (id / name / color).
+        assert_eq!(pipe[0]["id"], front[0]["id"]);
+        assert_eq!(pipe[0]["name"], front[0]["name"]);
+        assert!(pipe[0].get("color").is_some(), "color 키는 보존된다");
+    }
+
+    /// M2 RED #1: `SetWorkspaceRootResult`의 직렬화 형태가 camelCase 키로 고정됨.
+    #[test]
+    fn set_workspace_root_result_camel_case_keys() {
+        use crate::state::WorkspaceStore;
+        let store = WorkspaceStore::with_default();
+        let workspace = store.workspaces[0].clone();
+        let workspaces = store.metas();
+        let result = super::SetWorkspaceRootResult {
+            workspaces,
+            workspace,
+            rewritten: 2,
+        };
+        let v = serde_json::to_value(&result).unwrap();
+        assert!(v.get("workspaces").is_some(), "workspaces 키");
+        assert!(v.get("workspace").is_some(), "workspace 키");
+        assert_eq!(v["rewritten"], 2, "rewritten 키 (camelCase 고정)");
+        // 스네이크 케이스 잔재가 없어야 한다.
+        assert!(v.get("workspace_id").is_none());
+    }
 
     #[test]
     fn accepts_http_and_https() {

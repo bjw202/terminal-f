@@ -98,7 +98,59 @@ M1 범위 밖 pre-existing이다.
 프로덕션(실제 셸 존재)에서는 통과한다. `C:\Windows`/`current_exe()`/temp-dir 의존 테스트는
 Windows 환경 가정에 묶인다(프로젝트가 Windows 전용이므로 허용 범위).
 
-_M2~M5 및 run-phase 완료 신호(§E.3)는 후속 delegation에서 기록._
+### M2 — 커맨드 계층 + 파이프 경계 root_dir 제거 (2026-08-05)
+
+cycle_type=tdd (RED → GREEN → REFACTOR). RED 확인: 신규 테스트 2개가
+컴파일 오류 2건(`pipe_list_workspaces_value` / `SetWorkspaceRootResult` 미존재)으로
+실패 → GREEN 구현 후 전부 통과.
+
+**AC PASS/FAIL 행렬 (M2 범위)**
+
+| AC | 대응 R | Status | 검증 명령 | 실측 결과 |
+|----|--------|--------|-----------|-----------|
+| AC-12 | spec.md §C (경로 비노출) | PASS | `cargo test --lib pipe_list_workspaces_omits_root_dir` | `1 passed (112 filtered)` — 파이프 payload에 rootDir 키 없음 **AND** 프론트엔드(metas 직접)에는 `rootDir="C:\Windows"` 실림. "필드 삭제" 회귀와 구분됨 |
+| AC-3(완성) | R5 | PASS | `cargo test --lib set_root_dir_rewrites_leaf_cwds` | `metas()[0].root_dir` 노출분 M2에서 완성 — `WorkspaceMeta.root_dir` 추가 + metas() 채움 |
+| (M2 #1) | — | PASS | `cargo test --lib set_workspace_root_result_camel_case_keys` | `1 passed` — `SetWorkspaceRootResult` camelCase 키(workspaces/workspace/rewritten) 고정, 스네이크 잔재 없음 |
+
+**E2 파이프 경계 구조 증명**: `grep -A5 '"listWorkspaces" =>' commands.rs`가
+`Ok(pipe_list_workspaces_value(&store.metas()))`를 보임 — `to_value(store.metas())`
+직접 직렬화가 아니라 root_dir을 제거한 매핑을 거친다 (id/name/color만).
+
+**E3 등록 증명**: `grep -n 'set_workspace_root' lib.rs` → `lib.rs:129`
+`commands::set_workspace_root,` invoke_handler 등록 확인 (런타임 전용 실패 방지).
+
+**전체 테스트 (verbatim tail)**
+
+```
+test session::tests::detect_shell_finds_something_on_windows ... FAILED
+test result: FAILED. 112 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+- baseline(M1 후): 110 passed / 1 failed → M2 후: 112 passed / 1 failed (+2 신규 전부 통과).
+- 유일한 실패 `detect_shell_finds_something_on_windows`는 pre-existing 환경 실패
+  (샌드박스 PATH에 셸 없음). M2 범위와 무관.
+
+**품질 게이트 (clippy)**: 신규 경고 0. clippy 오류 2건(`paste.rs:75` needless_borrow +
+`spool.rs:73` len_without_is_empty)은 pre-existing baseline이며 M2 파일(model/config/
+state/commands/lib.rs)과 무관 — §D 제약상 손대지 않음.
+
+**핵심 증거 grep**
+- `grep -rn 'AskUserQuestion' src-tauri/src/` → 없음 — subagent 경계 준수
+- `git diff --stat capabilities/default.json` → empty — `["core:default"]` 불변 (§A.2)
+- `split_pane`(commands.rs ~line 293)에 ADR-011 live-cwd 비재정의 주석 추가 (주석 전용, 동작 무변경)
+
+**Gaps (미검증)**: AC-7(수동 E2E)/AC-8(autotest)/AC-9(전체 품질게이트)/AC-11(문서)는
+M3~M5 및 sync 단계 책임이라 M2에서 검증하지 않는다. `set_workspace_root` 커맨드의
+런타임 왕복(store 락→persist)은 단위 테스트로 직접 커버되지 않으나(tauri::State 구성
+부담), 그 핵심 로직 `set_root_dir`은 M1의 6개 단위 테스트가 덮는다. 커버리지 수치는
+미측정(cargo-llvm-cov 존재하나 M2 완료조건 아님).
+
+**Residual-risk**: `set_workspace_root`의 락 순서(store→registry, persist는 락 해제 후)는
+코드 리뷰로 검증했고 set_workspace_color와 동일 패턴이나, 동시성 경합은 단위 테스트로
+재현하지 않았다. `WorkspaceMeta.root_dir`은 `color`와 동일하게 skip_serializing_if 없이
+항상 키를 내보내므로(미설정 시 null) 파이프 경계 제거가 필수이며 그것이 AC-12로 강제된다.
+
+_M3~M5 및 run-phase 완료 신호(§E.3)는 후속 delegation에서 기록._
 
 ## §E.3 Run-phase Audit-Ready Signal
 

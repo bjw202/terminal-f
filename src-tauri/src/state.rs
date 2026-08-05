@@ -21,6 +21,12 @@ pub struct WorkspaceMeta {
     pub id: WorkspaceId,
     pub name: String,
     pub color: Option<String>,
+    /// 워크스페이스 시작 폴더 (SPEC-WORKSPACE-ROOT-001 §A.4). 컨텍스트 메뉴가
+    /// 비활성 워크스페이스를 포함한 모든 우클릭 대상의 현재 경로를 렌더링하려면
+    /// metas에 이 값이 필요하다 (R11). `color`와 동일하게 항상 키를 내보낸다
+    /// (미설정 시 null). **파이프 경계에서는 제거된다** — commands.rs
+    /// `pipe_list_workspaces_value` 참조 (§A.4.2, AC-12).
+    pub root_dir: Option<String>,
 }
 
 pub struct WorkspaceStore {
@@ -103,6 +109,7 @@ impl WorkspaceStore {
                 id: w.id.clone(),
                 name: w.name.clone(),
                 color: w.color.clone(),
+                root_dir: w.root_dir.clone(),
             })
             .collect()
     }

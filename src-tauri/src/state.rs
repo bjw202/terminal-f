@@ -4,7 +4,8 @@
 
 use crate::layout;
 use crate::model::{
-    default_cwd, new_id, now_ms, Config, PaneNode, Workspace, WorkspaceId, CONFIG_SCHEMA_VERSION,
+    default_cwd, new_id, normalize_root_dir, now_ms, Config, PaneNode, Workspace, WorkspaceId,
+    CONFIG_SCHEMA_VERSION,
 };
 use crate::session::SessionRegistry;
 use serde::Serialize;
@@ -172,6 +173,31 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    /// 워크스페이스 시작 폴더를 설정하거나(Some) 해제한다(None/공백).
+    /// 유효한 폴더로 설정하면 그 워크스페이스 트리의 **모든** `PaneLeaf.cwd`를
+    /// 그 폴더로 덮어쓰고 재작성된 팬 개수를 반환한다. 해제 시에는 `root_dir`만
+    /// `None`으로 되돌리고 기존 cwd는 보존한다 (R5/R7).
+    ///
+    /// VALIDATE-BEFORE-MUTATE (reorder와 동일한 계약): `normalize_root_dir`을
+    /// `get_mut`보다 **먼저** 호출해, 잘못된 경로가 워크스페이스 상태에 절대
+    /// 반쯤 적용되지 않게 한다.
+    pub fn set_root_dir(&mut self, id: &str, root_dir: Option<String>) -> Result<usize, String> {
+        let dir = normalize_root_dir(root_dir)?;
+        let ws = self
+            .get_mut(id)
+            .ok_or_else(|| format!("workspace not found: {id}"))?;
+        ws.root_dir = dir.clone();
+        let mut n = 0;
+        if let Some(d) = dir {
+            for leaf in layout::collect_panes_mut(&mut ws.root) {
+                leaf.cwd = d.clone();
+                n += 1;
+            }
+        }
+        ws.updated_at = now_ms();
+        Ok(n)
+    }
+
     /// Create a workspace from a prebuilt pane tree (template apply, Phase B).
     /// Enforces the same caps as `create`.
     pub fn create_with_root(
@@ -201,6 +227,8 @@ impl WorkspaceStore {
             created_at: now,
             updated_at: now,
             color: None,
+            // 템플릿에서 루트를 유도하지 않는다 (spec.md §E). None만 추가한다.
+            root_dir: None,
         };
         self.workspaces.push(ws.clone());
         Ok((ws, warning))
@@ -253,6 +281,8 @@ pub fn new_workspace(name: &str) -> Workspace {
         created_at: now,
         updated_at: now,
         color: None,
+        // #[serde(default)]는 역직렬화 전용이므로 struct 리터럴에는 명시 필요.
+        root_dir: None,
     }
 }
 
@@ -443,6 +473,124 @@ mod tests {
         assert_eq!(
             ws0.active_pane_id.as_deref(),
             Some(layout::first_pane_id(&ws0.root).as_str())
+        );
+    }
+
+    // ---- set_root_dir (SPEC-WORKSPACE-ROOT-001 M1) ----
+
+    /// `C:\Windows`는 autotest가 "guaranteed to exist"로 쓰는 보장된 폴더다.
+    fn existing_dir() -> String {
+        "C:\\Windows".to_string()
+    }
+
+    /// 팬 2개를 가진 store와 그 워크스페이스 id를 만든다.
+    fn two_pane_store() -> (WorkspaceStore, WorkspaceId) {
+        let mut store = WorkspaceStore::with_default();
+        let id = store.workspaces[0].id.clone();
+        let first = layout::first_pane_id(&store.workspaces[0].root);
+        {
+            let ws = store.get_mut(&id).unwrap();
+            layout::split_pane(
+                &mut ws.root,
+                &first,
+                crate::model::Direction::Row,
+                layout::new_pane_leaf("C:\\seed"),
+            )
+            .unwrap();
+        }
+        (store, id)
+    }
+
+    #[test]
+    fn set_root_dir_rewrites_leaf_cwds() {
+        let (mut store, id) = two_pane_store();
+        let root = existing_dir();
+        let n = store.set_root_dir(&id, Some(root.clone())).unwrap();
+        assert_eq!(n, 2, "both panes rewritten");
+        for leaf in layout::collect_panes(&store.get(&id).unwrap().root) {
+            assert_eq!(leaf.cwd, root, "pane cwd rewritten to root");
+        }
+        assert_eq!(
+            store.get(&id).unwrap().root_dir.as_deref(),
+            Some(root.as_str()),
+            "workspace root_dir set"
+        );
+    }
+
+    #[test]
+    fn set_root_dir_rejects_missing_folder() {
+        let (mut store, id) = two_pane_store();
+        let before: Vec<String> = layout::collect_panes(&store.get(&id).unwrap().root)
+            .iter()
+            .map(|l| l.cwd.clone())
+            .collect();
+        let missing = "C:\\this\\path\\does\\not\\exist\\zzz12345";
+        let res = store.set_root_dir(&id, Some(missing.into()));
+        assert!(res.is_err(), "missing folder rejected");
+        assert!(
+            store.get(&id).unwrap().root_dir.is_none(),
+            "root_dir unchanged on reject"
+        );
+        let after: Vec<String> = layout::collect_panes(&store.get(&id).unwrap().root)
+            .iter()
+            .map(|l| l.cwd.clone())
+            .collect();
+        assert_eq!(before, after, "cwds unchanged (validate-before-mutate)");
+    }
+
+    #[test]
+    fn set_root_dir_rejects_file_path() {
+        let (mut store, id) = two_pane_store();
+        // 테스트 바이너리 자신은 실재하는 "파일"(디렉터리가 아님)이다.
+        let file = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        let res = store.set_root_dir(&id, Some(file));
+        assert!(res.is_err(), "file path (non-dir) rejected");
+        assert!(store.get(&id).unwrap().root_dir.is_none());
+    }
+
+    #[test]
+    fn set_root_dir_unknown_workspace_errors() {
+        let (mut store, _id) = two_pane_store();
+        // 존재하는 폴더 + 없는 워크스페이스 id → normalize 통과 후 get_mut 실패.
+        let err = store.set_root_dir("ghost", Some(existing_dir())).unwrap_err();
+        assert!(err.contains("workspace not found"), "{err}");
+    }
+
+    #[test]
+    fn set_root_dir_blank_clears() {
+        let (mut store, id) = two_pane_store();
+        store.set_root_dir(&id, Some(existing_dir())).unwrap();
+        assert!(store.get(&id).unwrap().root_dir.is_some());
+        // 공백 문자열은 None으로 해제된다.
+        let n = store.set_root_dir(&id, Some("   ".into())).unwrap();
+        assert_eq!(n, 0, "clear rewrites no panes");
+        assert!(
+            store.get(&id).unwrap().root_dir.is_none(),
+            "blank clears root_dir"
+        );
+    }
+
+    #[test]
+    fn set_root_dir_clear_keeps_existing_cwds() {
+        let (mut store, id) = two_pane_store();
+        let root = existing_dir();
+        store.set_root_dir(&id, Some(root.clone())).unwrap();
+        let cwds_after_set: Vec<String> = layout::collect_panes(&store.get(&id).unwrap().root)
+            .iter()
+            .map(|l| l.cwd.clone())
+            .collect();
+        assert!(cwds_after_set.iter().all(|c| *c == root));
+        // None으로 해제: root_dir만 None, 팬 cwd는 보존 (R7).
+        let n = store.set_root_dir(&id, None).unwrap();
+        assert_eq!(n, 0, "clear rewrites no panes");
+        assert!(store.get(&id).unwrap().root_dir.is_none());
+        let cwds_after_clear: Vec<String> = layout::collect_panes(&store.get(&id).unwrap().root)
+            .iter()
+            .map(|l| l.cwd.clone())
+            .collect();
+        assert_eq!(
+            cwds_after_set, cwds_after_clear,
+            "cwds preserved on clear (R7)"
         );
     }
 }

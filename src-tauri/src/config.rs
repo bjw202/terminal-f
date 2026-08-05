@@ -25,7 +25,7 @@ pub fn migrate(value: serde_json::Value) -> Result<Config, String> {
         CONFIG_SCHEMA_VERSION => {
             serde_json::from_value(value).map_err(|e| format!("config parse error: {e}"))
         }
-        1 | 2 | 3 | 4 | 5 | 6 => {
+        1..=7 => {
             let mut cfg: Config = serde_json::from_value(value)
                 .map_err(|e| format!("config v{version} parse error: {e}"))?;
             cfg.schema_version = CONFIG_SCHEMA_VERSION;
@@ -121,6 +121,7 @@ mod tests {
                 created_at: now_ms(),
                 updated_at: now_ms(),
                 color: None,
+                root_dir: None,
             }],
             ui: serde_json::json!({}),
             automation: Vec::new(),
@@ -179,6 +180,7 @@ mod tests {
         assert_eq!(cfg.schema_version, CONFIG_SCHEMA_VERSION);
         assert_eq!(cfg.workspaces.len(), 1);
         assert_eq!(cfg.workspaces[0].color, None, "v2 color defaults to None");
+        assert!(cfg.workspaces[0].root_dir.is_none(), "v8 root_dir defaults to None");
         assert_eq!(cfg.active_workspace_id.as_deref(), Some("ws-legacy"));
         for leaf in crate::layout::collect_panes(&cfg.workspaces[0].root) {
             assert!(leaf.labels.is_empty(), "v3 labels default to empty");
@@ -207,6 +209,7 @@ mod tests {
         let cfg = migrate(legacy).expect("v2 must migrate");
         assert_eq!(cfg.schema_version, CONFIG_SCHEMA_VERSION);
         assert_eq!(cfg.workspaces[0].color.as_deref(), Some("#89b4fa"));
+        assert!(cfg.workspaces[0].root_dir.is_none(), "v8 root_dir defaults to None");
         let leaf = crate::layout::collect_panes(&cfg.workspaces[0].root)[0];
         assert!(leaf.labels.is_empty());
         assert!(!leaf.allow_injection);
@@ -230,6 +233,7 @@ mod tests {
         });
         let cfg = migrate(legacy).expect("v3 must migrate");
         assert_eq!(cfg.schema_version, CONFIG_SCHEMA_VERSION);
+        assert!(cfg.workspaces[0].root_dir.is_none(), "v8 root_dir defaults to None");
         let leaf = crate::layout::collect_panes(&cfg.workspaces[0].root)[0];
         assert_eq!(leaf.labels, vec!["codex".to_string()]);
         assert!(leaf.allow_injection);
@@ -261,6 +265,7 @@ mod tests {
         });
         let cfg = migrate(legacy).expect("v4 must migrate");
         assert_eq!(cfg.schema_version, CONFIG_SCHEMA_VERSION);
+        assert!(cfg.workspaces[0].root_dir.is_none(), "v8 root_dir defaults to None");
         assert_eq!(cfg.automation.len(), 1);
         // legacy rule with no `source` resolves to a git-diff source on `repo`.
         assert_eq!(
@@ -269,6 +274,87 @@ mod tests {
                 repo: "C:\\repo".into()
             }
         );
+    }
+
+    #[test]
+    fn v7_fixture_migrates_to_v8() {
+        // 현실적인 v7 설정: split 팬 트리 + pane cwd/command + labels/allowInjection/
+        // allowObserve/startupCommand + trustedRepos. rootDir 키는 v7에 없다.
+        // §B.1 함정 회귀 테스트: config.rs:28의 레거시 arm이 1..=7로 확장되지 않으면
+        // 이 v7 픽스처가 other => 오류 분기로 떨어져 expect가 패닉한다.
+        let legacy = serde_json::json!({
+            "schemaVersion": 7,
+            "activeWorkspaceId": "ws-v7",
+            "workspaces": [{
+                "id": "ws-v7",
+                "name": "project",
+                "color": "#a6e3a1",
+                "root": {
+                    "kind": "split",
+                    "id": "split-1",
+                    "direction": "row",
+                    "ratio": 0.6,
+                    "first": { "kind": "pane", "id": "p1", "sessionId": null,
+                               "cwd": "C:\\work\\a", "command": null,
+                               "labels": ["codex"], "allowInjection": true,
+                               "allowObserve": false, "startupCommand": "git status" },
+                    "second": { "kind": "pane", "id": "p2", "sessionId": null,
+                                "cwd": "C:\\work\\b", "command": "pwsh",
+                                "labels": [], "allowInjection": false,
+                                "allowObserve": true }
+                },
+                "activePaneId": "p2",
+                "createdAt": 1782956098600u64,
+                "updatedAt": 1782956101324u64
+            }],
+            "ui": { "theme": "campbell" },
+            "automation": [],
+            "trustedRepos": ["C:\\work\\a"]
+        });
+        let cfg = migrate(legacy).expect("v7 must migrate to v8 without loss");
+        assert_eq!(cfg.schema_version, CONFIG_SCHEMA_VERSION);
+        assert_eq!(cfg.schema_version, 8, "schema bumped to v8");
+        assert_eq!(cfg.workspaces.len(), 1, "no workspace lost");
+        assert!(
+            cfg.workspaces[0].root_dir.is_none(),
+            "root_dir defaults to None on migration"
+        );
+        // 팬 트리와 trustedRepos가 손실 없이 보존된다.
+        let panes = crate::layout::collect_panes(&cfg.workspaces[0].root);
+        assert_eq!(panes.len(), 2, "both panes preserved");
+        assert_eq!(cfg.trusted_repos, vec!["C:\\work\\a".to_string()]);
+    }
+
+    #[test]
+    fn root_dir_survives_save_load_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("termf-test-{}", crate::model::new_id()));
+        let path = dir.join("config.json");
+        let mut cfg = sample_config();
+        // 존재하는 폴더를 root_dir로 설정 (temp_dir은 실재한다).
+        let root = std::env::temp_dir().to_string_lossy().into_owned();
+        cfg.workspaces[0].root_dir = Some(root.clone());
+        save_config(&path, &cfg).unwrap();
+        let loaded = load_config(&path).unwrap().expect("config must exist");
+        assert_eq!(
+            loaded.workspaces[0].root_dir.as_deref(),
+            Some(root.as_str()),
+            "root_dir survives save/load roundtrip"
+        );
+
+        // camelCase 키 고정: Some일 때 "rootDir" 키가 실린다.
+        let v = serde_json::to_value(&loaded.workspaces[0]).unwrap();
+        assert_eq!(v["rootDir"], serde_json::json!(root), "rootDir camelCase key");
+
+        // skip_serializing_if 증명: None일 때 "rootDir" 키가 아예 없다.
+        let mut none_ws = loaded.workspaces[0].clone();
+        none_ws.root_dir = None;
+        let vn = serde_json::to_value(&none_ws).unwrap();
+        assert!(
+            vn.get("rootDir").is_none(),
+            "rootDir key omitted when None (skip_serializing_if)"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

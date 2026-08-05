@@ -237,6 +237,28 @@ pub fn set_workspace_root(
     })
 }
 
+/// 네이티브 폴더 선택 대화상자를 열고 선택된 폴더의 절대 경로를 반환한다
+/// (SPEC-WORKSPACE-ROOT-001 M3). 취소하면 `Ok(None)`.
+///
+/// `#[tauri::command(async)]`를 **동기 함수**에 붙여, 사용자가 폴더를 고르는 동안
+/// (수 분이 걸릴 수 있다) 블로킹되는 본문을 UI 스레드 밖으로 옮긴다. 이 어트리뷰트가
+/// 없으면 네이티브 대화상자가 WebView2 이벤트 루프를 교착시킬 수 있다 (§B.3).
+/// `set_parent(&window)`는 대화상자를 앱 창 소유로 유지해 창 뒤로 숨지 않게 한다 (§B.4).
+#[tauri::command(async)]
+pub fn pick_folder(window: tauri::Window, initial: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new().set_title("워크스페이스 시작 폴더 선택");
+    // 시작 디렉터리는 실재하는 폴더일 때만 지정한다 (없는 경로는 OS 기본 위치를 쓴다).
+    if let Some(dir) = initial {
+        if std::path::Path::new(&dir).is_dir() {
+            dialog = dialog.set_directory(&dir);
+        }
+    }
+    dialog = dialog.set_parent(&window);
+    Ok(dialog
+        .pick_folder()
+        .map(|p| p.to_string_lossy().into_owned()))
+}
+
 /// Replace persisted UI preferences (theme, sidebar state, font).
 #[tauri::command]
 pub fn set_ui_prefs(state: State<'_, AppState>, ui: serde_json::Value) {

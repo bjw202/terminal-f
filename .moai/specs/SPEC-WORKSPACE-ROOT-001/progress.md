@@ -150,7 +150,46 @@ M3~M5 및 sync 단계 책임이라 M2에서 검증하지 않는다. `set_workspa
 재현하지 않았다. `WorkspaceMeta.root_dir`은 `color`와 동일하게 skip_serializing_if 없이
 항상 키를 내보내므로(미설정 시 null) 파이프 경계 제거가 필수이며 그것이 AC-12로 강제된다.
 
-_M3~M5 및 run-phase 완료 신호(§E.3)는 후속 delegation에서 기록._
+### M3 — 네이티브 폴더 대화상자 (rfd) (2026-08-05)
+
+**Claim (주장)**: `rfd` 크레이트 기반 `pick_folder` 커맨드를 추가해 네이티브 폴더
+선택 대화상자를 열 수 있고, `capabilities/default.json`·`package-lock.json`을 건드리지
+않은 채 전체가 컴파일·테스트·clippy를 통과한다.
+
+**Evidence (증거)**:
+
+| 항목 | Status | 검증 명령 | 실제 출력 |
+|---|---|---|---|
+| rfd 추가 | PASS | `cargo add rfd` | `Adding rfd v0.17.2 to dependencies` — plan의 `"0.16"`은 추정치, 실제 최신 안정 = **0.17.2** |
+| 빌드 | PASS | `cargo build` | `Finished dev profile ... in 35.51s` — `set_parent(&window)` 컴파일 성공(§B.4 트레이트 불일치 미발생, 제거 불필요) |
+| 테스트 | PASS(회귀 없음) | `cargo test --lib` | `112 passed; 1 failed` — M2 baseline과 동일. 유일 실패는 pre-existing `detect_shell_finds_something_on_windows`(샌드박스 PATH 셸 없음). M3는 신규 테스트 없음(네이티브 모달은 headless 단위 테스트 불가 → pick_folder를 어떤 테스트도 호출하지 않음, AC-7 수동 E2E로 커버) |
+| (async) 어트리뷰트 | PASS | `grep -B1 'fn pick_folder' commands.rs` | `#[tauri::command(async)]` — 블로킹 본문을 UI 스레드 밖으로(§B.3) |
+| 등록 | PASS | `grep -n 'pick_folder' lib.rs` | `130: commands::pick_folder,` |
+| capabilities 불변 | PASS | `git diff --stat capabilities/default.json` | 빈 출력 — `["core:default"]` 유지(§A.2 근거 2) |
+| package-lock 불변 | PASS | `git status package.json package-lock.json` | 빈 출력(JS 다이얼로그 플러그인 미도입) |
+| 경계(C-HRA-008) | PASS | `grep -rn 'AskUserQuestion' src-tauri/src/` | `no AskUserQuestion` |
+
+**Baseline-attribution (baseline 귀속)**: 테스트 판정 baseline은 M2 후 `112 passed / 1
+failed`(memory: terminalf-test-baseline). M3는 소스 커맨드만 추가하고 테스트를 추가하지
+않으므로 카운트가 baseline과 정확히 일치해야 정상이며, 실측 결과 일치했다. clippy
+2건(`paste.rs:75` needless_borrow, `spool.rs:73` len_without_is_empty)은 memory에 기록된
+pre-existing baseline noise로 SPEC 범위 밖 파일 — M3 변경 파일(commands.rs/lib.rs/
+Cargo.toml)에서 신규 clippy finding 0건.
+
+**Gaps (미검증)**: AC-7(수동 E2E — 실제 폴더 선택/취소)은 네이티브 모달이라 headless로
+검증 불가하며 실기기 확인이 완료 조건이다. `pick_folder`의 런타임 동작(대화상자 표시,
+`set_parent` 창 소유, `set_directory` 초기 경로)은 단위 테스트로 재현하지 않았다(M3 절
+설계상 thin wrapper — 의도적). AC-8(autotest)/AC-9(전체 품질게이트)/AC-11(문서)는 M4~M5
+및 sync 단계 책임.
+
+**Residual-risk (잔여 위험)**: (1) `set_parent`는 이 머신의 rfd 0.17.2 + tauri 2.11이
+동일 `raw-window-handle` 메이저를 쓰기에 컴파일됐으나(§B.4 위험 미실현), 향후 의존성 범프
+시 재검토 대상. (2) `#[tauri::command(async)]`는 대화상자가 열려 있는 동안 async 워커
+스레드 1개를 점유한다(§B.3 — pick_folder는 동시 다중 오픈 불가 UI라 허용 범위). (3) rfd
+기본 features가 wayland/xdg-portal(Linux 전용, target-gated)을 끌어오나 Windows 빌드엔
+포함되지 않는다.
+
+_M4~M5 및 run-phase 완료 신호(§E.3)는 후속 delegation에서 기록._
 
 ## §E.3 Run-phase Audit-Ready Signal
 

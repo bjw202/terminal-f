@@ -127,6 +127,7 @@ pub fn run() {
             commands::reorder_workspaces,
             commands::set_workspace_color,
             commands::set_workspace_root,
+            commands::pick_folder,
             commands::set_ui_prefs,
             commands::list_workspaces,
             commands::create_workspace,

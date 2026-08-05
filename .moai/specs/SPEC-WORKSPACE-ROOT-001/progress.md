@@ -320,7 +320,7 @@ autotest 4체크는 실기기(셸 존재)에서만 `report.ok` 전체와 함께 
 
 ```yaml
 run_complete_at: 2026-08-05
-run_commit_sha: pending-backfill-m5     # M5 커밋 착지 후 후속 커밋에서 백필
+run_commit_sha: 542f079     # M5 커밋 (backfill)
 run_status: audit-ready
 milestones_complete: [M1, M2, M3, M4, M5]
 ac_pass_count: 10          # AC-1~AC-6, AC-8, AC-10a, AC-10b, AC-12 (run-phase 자동)

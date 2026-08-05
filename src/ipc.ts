@@ -15,6 +15,7 @@ import type {
   PtyExitEvent,
   PtyOutputEvent,
   ReplayResult,
+  SetWorkspaceRootResult,
   WorkspaceActivity,
   WorkspaceMeta,
   WorkspaceResult,
@@ -26,6 +27,11 @@ export const reorderWorkspaces = (workspaceIds: string[]) =>
   invoke<WorkspaceMeta[]>("reorder_workspaces", { workspaceIds });
 export const setWorkspaceColor = (workspaceId: string, color: string | null) =>
   invoke<WorkspaceMeta[]>("set_workspace_color", { workspaceId, color });
+export const setWorkspaceRoot = (workspaceId: string, rootDir: string | null) =>
+  invoke<SetWorkspaceRootResult>("set_workspace_root", { workspaceId, rootDir });
+// 취소 시 백엔드가 null을 반환한다 (사용자가 대화상자를 닫음).
+export const pickFolder = (initial?: string) =>
+  invoke<string | null>("pick_folder", { initial: initial ?? null });
 export const setUiPrefs = (ui: unknown) => invoke<void>("set_ui_prefs", { ui });
 export const listWorkspaces = () => invoke<WorkspaceMeta[]>("list_workspaces");
 export const createWorkspace = (name?: string) =>

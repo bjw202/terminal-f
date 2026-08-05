@@ -265,8 +265,8 @@ body,
   z-index: 20;
 }
 
-/* color label context menu */
-#sb-colormenu {
+/* workspace context menu: color label + root folder (flat, not a submenu) */
+#sb-wsmenu {
   position: fixed;
   z-index: 100;
   background: var(--panel-bg);
@@ -274,6 +274,8 @@ body,
   border-radius: 6px;
   padding: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  min-width: 200px;
+  max-width: 280px;
 }
 
 .sb-colormenu-label {
@@ -305,6 +307,44 @@ body,
   color: var(--faint);
   font-size: 11px;
   line-height: 1;
+}
+
+/* root folder section (flat, within #sb-wsmenu) */
+.sb-wsmenu-sep {
+  height: 1px;
+  background: var(--panel-border);
+  margin: 8px 0;
+}
+
+.sb-wsmenu-path {
+  font-size: 11px;
+  color: var(--fg);
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-wsmenu-path.muted {
+  color: var(--faint);
+}
+
+.sb-wsmenu-item {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  text-align: left;
+}
+
+.sb-wsmenu-item:hover {
+  background: var(--hover);
+  color: var(--fg);
 }
 
 /* ------------------------------------------------------------ panes */

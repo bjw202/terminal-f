@@ -17,6 +17,8 @@ export interface SidebarProps {
   onRename(id: string, name: string): void;
   onReorder(ids: string[]): void;
   onSetColor(id: string, color: string | null): void;
+  onPickRoot(id: string): void;
+  onClearRoot(id: string): void;
   onToggle(): void;
   onWidthChange(width: number): void;
   onOpenPalette(): void;
@@ -168,7 +170,7 @@ function buildItem(meta: WorkspaceMeta, index: number, props: SidebarProps): HTM
   });
   item.addEventListener("contextmenu", (e) => {
     e.preventDefault();
-    openColorMenu(e.clientX, e.clientY, meta, props);
+    openWorkspaceMenu(e.clientX, e.clientY, meta, props);
   });
 
   // drag reorder
@@ -240,11 +242,21 @@ function beginRename(nameEl: HTMLElement, meta: WorkspaceMeta, props: SidebarPro
   });
 }
 
-function openColorMenu(x: number, y: number, meta: WorkspaceMeta, props: SidebarProps): void {
-  document.getElementById("sb-colormenu")?.remove();
+/** 경로를 결정적으로 축약한다: 첫 세그먼트 + … + 마지막 두 세그먼트.
+ * 전체 경로는 호출 측이 title 속성에 넣는다. max 이하면 그대로 반환한다. */
+function shortPath(p: string, max = 34): string {
+  if (p.length <= max) return p;
+  const parts = p.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 3) return p;
+  return `${parts[0]}\\…\\${parts.slice(-2).join("\\")}`;
+}
+
+// 이름은 더 이상 색상 전용이 아니다: 컬러 스와치 + 시작 폴더 섹션을 함께 담는다.
+function openWorkspaceMenu(x: number, y: number, meta: WorkspaceMeta, props: SidebarProps): void {
+  document.getElementById("sb-wsmenu")?.remove();
   sidebarBusy = true;
   const menu = document.createElement("div");
-  menu.id = "sb-colormenu";
+  menu.id = "sb-wsmenu";
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
@@ -276,6 +288,49 @@ function openColorMenu(x: number, y: number, meta: WorkspaceMeta, props: Sidebar
   });
   row.appendChild(none);
   menu.appendChild(row);
+
+  // 평평한 두 번째 섹션: 시작 폴더 (서브메뉴 아님 — §A.3)
+  const sep = document.createElement("div");
+  sep.className = "sb-wsmenu-sep";
+  menu.appendChild(sep);
+
+  const rootLabel = document.createElement("div");
+  rootLabel.className = "sb-colormenu-label"; // 기존 라벨 클래스 재사용 (디프 최소화)
+  rootLabel.textContent = "Root folder";
+  menu.appendChild(rootLabel);
+
+  const pathLine = document.createElement("div");
+  pathLine.className = "sb-wsmenu-path";
+  if (meta.rootDir) {
+    pathLine.textContent = shortPath(meta.rootDir);
+    pathLine.title = meta.rootDir; // 전체 경로는 title에 (R11)
+  } else {
+    pathLine.textContent = "Not set";
+    pathLine.classList.add("muted");
+  }
+  menu.appendChild(pathLine);
+
+  const pick = document.createElement("button");
+  pick.className = "sb-wsmenu-item";
+  pick.textContent = "Choose folder…";
+  pick.addEventListener("click", () => {
+    close(); // 콜백 이전에 close (§A.3 호출 순서 불변식)
+    props.onPickRoot(meta.id);
+  });
+  menu.appendChild(pick);
+
+  // Clear는 루트가 설정된 경우에만 노출한다 (R11)
+  if (meta.rootDir) {
+    const clear = document.createElement("button");
+    clear.className = "sb-wsmenu-item";
+    clear.textContent = "Clear";
+    clear.addEventListener("click", () => {
+      close(); // 콜백 이전에 close (§A.3 호출 순서 불변식)
+      props.onClearRoot(meta.id);
+    });
+    menu.appendChild(clear);
+  }
+
   document.body.appendChild(menu);
 
   const close = () => {

@@ -189,7 +189,46 @@ Cargo.toml)에서 신규 clippy finding 0건.
 기본 features가 wayland/xdg-portal(Linux 전용, target-gated)을 끌어오나 Windows 빌드엔
 포함되지 않는다.
 
-_M4~M5 및 run-phase 완료 신호(§E.3)는 후속 delegation에서 기록._
+_M5 및 run-phase 완료 신호(§E.3)는 후속 delegation에서 기록._
+
+### M4 — 프론트엔드 배선 (우클릭 메뉴 + 팔레트) (2026-08-05)
+
+cycle_type=tdd (프론트엔드/TypeScript — UI 배선, 빌드로 검증). 프론트엔드 UI는
+headless 단위 테스트 대상이 아니므로(네이티브 폴더 대화상자 + DOM 컨텍스트 메뉴)
+`npm run build`(tsc 타입체크 + vite)를 완료 신호로 삼는다. 실기기 상호작용
+검증은 AC-7(수동 E2E), 자동 회귀는 M5 autotest 책임이다.
+
+**Claim (주장)**: 우클릭 컬러 메뉴를 평평하게 확장해 시작 폴더 선택/해제 UI를
+추가하고, 커맨드 팔레트 항목 2개를 등록했으며, 전체가 TypeScript 오류 0으로
+빌드된다. `autotest.ts`·`package.json`·`src-tauri`는 건드리지 않았다.
+
+**Evidence (증거)**
+
+| 항목 | Status | 검증 명령 | 실측 결과 |
+|---|---|---|---|
+| E1 빌드 | PASS | `npm run build` | `tsc --noEmit` 통과 + `✓ built in 1.13s` — TypeScript 오류 0. CSS 13.92→14.42 kB(신규 규칙), JS 493.90→495.54 kB(신규 배선) |
+| E2 rename 완결성 | PASS | `grep -rn 'sb-colormenu\|openColorMenu' src/` | 잔여 5건 **전부 클래스 참조**(`sb-colormenu-label`/`sb-colormenu-row`) — 함수 `openColorMenu`·id `sb-colormenu`는 0건(완전 개명). §A.3대로 `.sb-colormenu-*`/`.sb-swatch` 클래스는 보존 |
+| E3 팔레트 항목 | PASS | `grep -n 'ws.root' src/main.ts` | `ws.root`(555) + `ws.root.clear`(562) 둘 다 등록 |
+| E4 취소 경로 | PASS | 코드 리뷰 (`pickWorkspaceRoot`) | `if (dir === null) return;`가 `applyWorkspaceRoot` 이전 — 취소 시 IPC·토스트·재렌더 없음 (R10) |
+| E5 재시작 토스트 | PASS | `grep -n '재시작' src/main.ts` | 설정/해제 두 경로 모두 "재시작 후 적용됩니다" 명시 |
+| E6 호출 순서 | PASS | 코드 리뷰 (`openWorkspaceMenu`) | `pick`/`clear` 핸들러가 `props.onPickRoot`/`onClearRoot` **이전에** `close()` 호출 (§A.3 불변식) |
+| E7 미변경 파일 | PASS | `git status --short src/autotest.ts package.json package-lock.json src-tauri/` | 추적 파일 수정 0건 — 나열된 src-tauri 항목은 전부 pre-existing 미추적 빌드 산출물(target/gen/report) |
+| E8 경계(C-HRA-008) | PASS | `grep -rn 'AskUserQuestion' src/` | `(no AskUserQuestion)` |
+
+**Baseline-attribution (baseline 귀속)**: 빌드 baseline은 M4 착수 전 `npm run build`
+= tsc 통과 + `✓ built in 1.16s`(CSS 13.92 kB / JS 493.90 kB). M4 후 동일하게 tsc
+통과하며 산출물이 신규 UI 배선분만큼 증가(CSS 14.42 kB / JS 495.54 kB)해 정상이다.
+
+**Gaps (미검증)**: AC-7(실제 폴더 선택/취소, 오류 표시)은 네이티브 모달이라 headless
+빌드로는 검증 불가 — 실기기 확인이 완료 조건이다. `pickFolder`/`setWorkspaceRoot`의
+런타임 왕복(대화상자 표시, metas 갱신, current 교체)은 빌드 타입체크만 거쳤고 실행
+경로는 재현하지 않았다. AC-8(autotest 회귀)은 M5, AC-11(문서)은 sync 단계 책임이다.
+
+**Residual-risk (잔여 위험)**: (1) `shortPath`는 UNC(`\\host\share`) 입력 시
+`filter(Boolean)`로 선행 `\\`가 소실되나 전체 경로가 `title`에 남으므로 표시 전용
+열화에 그친다. (2) 컨텍스트 메뉴의 `close()`는 선언 이전 클로저에서 참조되지만
+클릭 시점에 실행되므로 기존 스와치 핸들러와 동일 패턴으로 안전하다. (3) 팔레트
+`ws.root`/`ws.root.clear`는 `current`가 없으면 무동작(guard) — 초기 부팅 전 호출 방지.
 
 ## §E.3 Run-phase Audit-Ready Signal
 

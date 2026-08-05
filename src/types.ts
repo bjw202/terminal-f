@@ -37,12 +37,16 @@ export interface Workspace {
   createdAt: number;
   updatedAt: number;
   color?: string | null;
+  /** 워크스페이스 시작 폴더. `root`(팬 트리)와 혼동하지 말 것. */
+  rootDir?: string | null;
 }
 
 export interface WorkspaceMeta {
   id: WorkspaceId;
   name: string;
   color: string | null;
+  /** 시작 폴더. 비활성 워크스페이스도 메뉴에서 현재 경로/Clear 표시에 사용 (R11). */
+  rootDir: string | null;
 }
 
 export interface WorkspaceActivity {
@@ -89,6 +93,12 @@ export interface CreateWorkspaceResult {
   workspace: Workspace;
   warning: string | null;
   workspaces: WorkspaceMeta[];
+}
+
+export interface SetWorkspaceRootResult {
+  workspaces: WorkspaceMeta[];
+  workspace: Workspace;
+  rewritten: number;
 }
 
 export interface ReplayResult {

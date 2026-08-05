@@ -244,6 +244,8 @@ function refreshSidebar(): void {
         })
         .catch((e) => showStatus(String(e), true));
     },
+    onPickRoot: (id) => void pickWorkspaceRoot(id),
+    onClearRoot: (id) => void applyWorkspaceRoot(id, null),
     onToggle: toggleSidebar,
     onWidthChange: (w) => {
       uiPrefs.sidebar = { ...uiPrefs.sidebar, width: w };
@@ -418,6 +420,42 @@ async function removeWorkspace(workspaceId: string): Promise<void> {
   }
 }
 
+// ------------------------------------------------------ workspace root (M4)
+
+// metas에서 현재 rootDir을 읽어 폴더 대화상자를 열고, 선택하면 적용한다.
+// 취소(pick_folder가 null 반환) 시 조용히 조기 반환한다 — IPC·토스트·재렌더 없음 (R10).
+async function pickWorkspaceRoot(id: string): Promise<void> {
+  const initial = metas.find((m) => m.id === id)?.rootDir ?? undefined;
+  let dir: string | null;
+  try {
+    dir = await ipc.pickFolder(initial);
+  } catch (e) {
+    showStatus(String(e), true);
+    return;
+  }
+  if (dir === null) return; // 취소 — 조용히 반환 (R10)
+  await applyWorkspaceRoot(id, dir);
+}
+
+// set_workspace_root 결과로 metas/current를 갱신하고 사이드바를 다시 그린다.
+// 성공 토스트는 "재시작 후 적용"을 명시한다 — 살아 있는 터미널이 그대로인 것이
+// 버그가 아니라 설명된 동작으로 읽히도록 한다.
+async function applyWorkspaceRoot(id: string, dir: string | null): Promise<void> {
+  try {
+    const res = await ipc.setWorkspaceRoot(id, dir);
+    metas = res.workspaces;
+    if (current?.id === id) current = res.workspace;
+    refreshSidebar();
+    showStatus(
+      dir
+        ? "시작 폴더를 설정했습니다 — 재시작 후 적용됩니다."
+        : "시작 폴더를 해제했습니다 — 재시작 후 적용됩니다.",
+    );
+  } catch (e) {
+    showStatus(String(e), true); // "not an existing folder" 등 백엔드 오류 노출
+  }
+}
+
 // ------------------------------------------------------------------- panes
 
 async function splitActive(direction: Direction): Promise<void> {
@@ -513,6 +551,20 @@ registerCommandProvider(() => [
   { id: "pane.close", title: "Pane: Close focused", hint: "Ctrl+Shift+W", run: () => closeActive() },
   { id: "pane.zoom", title: "Pane: Toggle zoom", hint: "Ctrl+Shift+Z", run: () => toggleZoom() },
   { id: "ws.new", title: "Workspace: New", run: () => addWorkspace() },
+  {
+    id: "ws.root",
+    title: "Workspace: Set root folder…",
+    run: () => {
+      if (current) void pickWorkspaceRoot(current.id);
+    },
+  },
+  {
+    id: "ws.root.clear",
+    title: "Workspace: Clear root folder",
+    run: () => {
+      if (current) void applyWorkspaceRoot(current.id, null);
+    },
+  },
   { id: "sidebar.toggle", title: "View: Toggle sidebar", hint: "Ctrl+Shift+B", run: () => toggleSidebar() },
   { id: "font.bigger", title: "View: Increase font size", run: () => setFontSize(terms.currentFontSize() + 1) },
   { id: "font.smaller", title: "View: Decrease font size", run: () => setFontSize(terms.currentFontSize() - 1) },

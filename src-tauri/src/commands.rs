@@ -83,6 +83,16 @@ fn ensure_sessions(state: &AppState, workspace_id: &str) -> Vec<String> {
         if alive {
             continue;
         }
+        // 시작 폴더(root_dir, SPEC-WORKSPACE-ROOT-001)를 설정한 뒤 그 폴더가
+        // 삭제된 경우처럼 cwd가 실재 디렉터리가 아니면, session.rs 의 spawn 은
+        // `cmd.cwd()` 호출을 조용히 건너뛰어 셸이 앱의 cwd 를 상속한다(§B.2).
+        // 오류도 신호도 없던 그 조용한 폴백을 기존 warnings 벡터로 드러낸다.
+        if !std::path::Path::new(&leaf.cwd).is_dir() {
+            warnings.push(format!(
+                "pane {}: start folder '{}' is not a directory; shell opened in the default location",
+                leaf.id, leaf.cwd
+            ));
+        }
         match state
             .registry
             .spawn_session(workspace_id, &leaf.id, &leaf.cwd, leaf.command.as_deref())

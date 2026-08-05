@@ -7,6 +7,14 @@
 import * as ipc from "./ipc";
 import * as terms from "./terms";
 import { percentile, sleep } from "./util";
+import type { PaneNode } from "./types";
+
+/** 팬 트리를 순회해 모든 leaf 의 cwd 를 모은다 (root_dir 재작성 검증용). */
+function collectCwds(node: PaneNode): string[] {
+  return node.kind === "pane"
+    ? [node.cwd]
+    : [...collectCwds(node.first), ...collectCwds(node.second)];
+}
 
 export interface AutotestCtl {
   currentWorkspaceId(): string;
@@ -567,6 +575,56 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
     const after = await ipc.deleteWorkspace(res.workspace.id);
     report.checks.workspaceCrud = after.workspaces.length === before;
     step(`workspace-crud:${report.checks.workspaceCrud}`);
+
+    // -- workspace 시작 폴더 (SPEC-WORKSPACE-ROOT-001, AC-8) -----------------
+    // set_workspace_root 를 직접 호출한다. pick_folder 는 네이티브 모달이
+    // headless 실행을 멈추므로 절대 부르지 않는다. C:\Windows 는 실재가
+    // 보장된 경로(위 live-cwd 블록과 동일 규약).
+    {
+      const wsr = await ipc.createWorkspace();
+      const wsId = wsr.workspace.id;
+      // 다중 팬 재작성을 검증하려고 루트 팬을 한 번 분할한다(비활성이라 스폰 없음).
+      const rootPaneId =
+        wsr.workspace.root.kind === "pane"
+          ? wsr.workspace.root.id
+          : (wsr.workspace.activePaneId as string);
+      await ipc.splitPane(wsId, rootPaneId, "row");
+
+      // rootDirSet: 설정이 반영되고 두 팬이 모두 재작성된다 (AC-3).
+      const setRes = await ipc.setWorkspaceRoot(wsId, "C:\\Windows");
+      report.checks.rootDirSet =
+        setRes.workspace.rootDir === "C:\\Windows" && setRes.rewritten >= 2;
+
+      // rootDirRewritesPanes: 모든 leaf cwd 가 새 루트로 재작성된다 (R5).
+      const cwdsSet = collectCwds(setRes.workspace.root);
+      report.checks.rootDirRewritesPanes =
+        cwdsSet.length >= 2 && cwdsSet.every((c) => c === "C:\\Windows");
+
+      // rootDirRejectsMissing: 존재하지 않는 경로는 거부되고 루트는 불변 (R6).
+      let rejected = false;
+      try {
+        await ipc.setWorkspaceRoot(wsId, "C:\\__terminal_f_no_such_dir_zzz__");
+      } catch {
+        rejected = true;
+      }
+      const metasAfter = await ipc.listWorkspaces();
+      const stillSet =
+        metasAfter.find((m) => m.id === wsId)?.rootDir === "C:\\Windows";
+      report.checks.rootDirRejectsMissing = rejected && stillSet;
+
+      // rootDirCleared: 해제하면 rootDir 은 null 이 되고 팬 cwd 는 보존된다 (R7/AC-5).
+      const clrRes = await ipc.setWorkspaceRoot(wsId, null);
+      const cwdsClr = collectCwds(clrRes.workspace.root);
+      report.checks.rootDirCleared =
+        clrRes.workspace.rootDir == null &&
+        cwdsClr.length >= 2 &&
+        cwdsClr.every((c) => c === "C:\\Windows");
+
+      await ipc.deleteWorkspace(wsId);
+      step(
+        `root-dir set:${report.checks.rootDirSet} rewrites:${report.checks.rootDirRewritesPanes} rejects:${report.checks.rootDirRejectsMissing} cleared:${report.checks.rootDirCleared}`,
+      );
+    }
   } catch (e) {
     report.errors.push(String(e));
     console.error("[autotest] error", e);
@@ -600,7 +658,11 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
     report.checks.liveCwdSplit === true &&
     report.checks.cwdPromptEmit === true &&
     report.checks.urlOpenGate === true &&
-    report.checks.urlRejectsUnsafe === true;
+    report.checks.urlRejectsUnsafe === true &&
+    report.checks.rootDirSet === true &&
+    report.checks.rootDirRewritesPanes === true &&
+    report.checks.rootDirRejectsMissing === true &&
+    report.checks.rootDirCleared === true;
 
   try {
     await ipc.autotestReport(report);

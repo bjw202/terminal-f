@@ -382,7 +382,7 @@ next_phase: sync            # /moai sync — §F.S S1~S7(ADR-013 신규 + 동반
 
 ```yaml
 sync_complete_at: 2026-08-06
-sync_commit_sha: pending-backfill-sync   # 이 커밋 자체의 SHA는 커밋 전 알 수 없음 — 후속 커밋에서 backfill
+sync_commit_sha: 3983c3c     # sync 커밋 (backfill)
 sync_status: audit-ready
 b12_self_test_a: "grep -c 'SPEC-WORKSPACE-ROOT-001' CHANGELOG.md — N/A: 이 프로젝트에 CHANGELOG.md 없음(SPEC 제약에 의해 sync 대상에서 명시적으로 제외됨)"
 b12_self_test_b: "acceptance.md AC 행렬 12개 행(AC-1~AC-12) vs 본 SPEC은 CHANGELOG 미보유이므로 해당 없음"

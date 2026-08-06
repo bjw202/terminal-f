@@ -173,7 +173,8 @@ TODO 마커); 워처 트리거 방식 주입은 범위 밖이다.
 
 `config.json` (Tauri 앱 설정 디렉터리, 예: `%APPDATA%/com.terminalf.app`):
 `schemaVersion`, `workspaces` (레이아웃 트리, 페인 cwd, 페인 command,
-activePaneId), `activeWorkspaceId`, 선택적 `ui` 환경설정. 모든 변경 커맨드마다
+activePaneId, 선택적 `rootDir` — 워크스페이스 시작 폴더, ADR-013),
+`activeWorkspaceId`, 선택적 `ui` 환경설정. 모든 변경 커맨드마다
 저장한다 (원자적 임시 파일 + rename).
 
 절대 영속화하지 않는 것: 세션 id, 프로세스 상태, 스크롤백, 원시 출력 히스토리,

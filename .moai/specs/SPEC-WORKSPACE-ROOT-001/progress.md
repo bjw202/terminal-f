@@ -2,9 +2,9 @@
 id: SPEC-WORKSPACE-ROOT-001
 title: "워크스페이스 시작 폴더 — 진행 기록"
 version: "0.4.0"
-status: in-progress
+status: completed
 created: 2026-08-05
-updated: 2026-08-05
+updated: 2026-08-06
 author: manager-spec
 priority: P1
 phase: "v0.1.2 target"
@@ -350,7 +350,64 @@ next_phase: sync            # /moai sync — §F.S S1~S7(ADR-013 신규 + 동반
 
 ## §E.4 Sync-phase Audit-Ready Signal
 
-_<pending sync-phase>_
+**AC-11 체크리스트 (11-a ~ 11-l, 총 14개 세부 항목)**
+
+| # | 항목 | 검증 명령 | 결과 |
+|---|---|---|---|
+| 11-a | `docs/ADR-013-*.md` 존재 | `ls docs/ADR-013-*.md` | PASS — `docs/ADR-013-workspace-root-folder.md` |
+| 11-b | ADR-013 4개 절 구조 | `grep -cE '^#{2,3} *(배경\|맥락\|결정\|트레이드오프\|테스트)' docs/ADR-013-*.md` | PASS — `4` |
+| 11-c | `rfd` vs `tauri-plugin-dialog` 결정 포함 | `grep -c 'tauri-plugin-dialog' docs/ADR-013-*.md` | PASS — `3` (≥1) |
+| 11-d | 한국어 작성 | 육안 확인 | PASS(human-verified) — 전문 한국어, 코드 식별자만 영어 |
+| 11-e | 팔레트 두 커맨드 `### <제목>` 표제 | `grep -c '^### Workspace: Set root folder' / '^### Workspace: Clear root folder' docs/GUIDE-command-palette.md` | PASS — 각 `1` |
+| 11-f | 하는 일/쓰는 법/원리 3불릿 (Set/Clear 각각) | `grep -A6 '^### Workspace: Set root folder' \| grep -c '하는 일\|쓰는 법\|원리'` / 동일 Clear | PASS — 각 `3` |
+| 11-f2 | 책상/칸 어휘 준수 | `grep -A6 '^### Workspace: Set root folder' \| grep -c '책상'` / 동일 Clear | PASS — Set `4`, Clear `2` (모두 ≥1) |
+| 11-g | `GUIDE-features-easy.md` "시작 폴더" 언급 | `grep -ci '시작 폴더' docs/GUIDE-features-easy.md` | PASS — `2` |
+| 11-h | `README.md` 사용자 관점 요약 | `grep -ci '시작 폴더' README.md` | PASS — `2` |
+| 11-i | `PLAN-M1-M2-roadmap.md` "구현 완료" 증가 | `grep -c '구현 완료' docs/PLAN-M1-M2-roadmap.md` | PASS — sync 전 5 → sync 후 `6` (1.2절에 2026-08-06 항목 추가) |
+| 11-j | `DEVELOPMENT.md` 상태 요약 갱신 | `grep -c 'schemaVersion \*\*8\*\*' docs/DEVELOPMENT.md` | PASS — `1` (Rust 테스트 113개, autotest 36개 검사, ADR-001~013도 함께 갱신) |
+| 11-k | `DEVELOPMENT.md` 모듈 지도/레시피/함정 갱신 | 육안 확인 | PASS(human-verified) — 모듈 지도(model.rs/state.rs/commands.rs 3곳)에 신규 함수 반영 + 트러블슈팅 표에 §B.2 항목 추가 |
+| 11-l | `ARCHITECTURE.md` 영속화 목록에 `rootDir` | `grep -c 'rootDir' docs/ARCHITECTURE.md` | PASS — `1` |
+
+**sync 산출물 S1~S7 완료 확인**
+
+| 산출물 | 파일 | 상태 |
+|---|---|---|
+| S1 | `docs/ADR-013-workspace-root-folder.md` (신규) | 완료 |
+| S2 | `docs/GUIDE-command-palette.md` (§2에 2개 항목 추가) | 완료 |
+| S3 | `docs/GUIDE-features-easy.md` (§6 표에 2개 행 추가) | 완료 |
+| S4 | `README.md` (사용자 관점 요약 절 추가 + ADR 범위 갱신) | 완료 |
+| S5 | `docs/PLAN-M1-M2-roadmap.md` (§1.2에 "구현 완료" 항목 추가) | 완료 |
+| S6 | `docs/DEVELOPMENT.md` (상태 요약 + 모듈 지도 + 트러블슈팅) | 완료 |
+| S7 | `docs/ARCHITECTURE.md` (§9 영속화 목록에 rootDir) | 완료 |
+
+```yaml
+sync_complete_at: 2026-08-06
+sync_commit_sha: pending-backfill-sync   # 이 커밋 자체의 SHA는 커밋 전 알 수 없음 — 후속 커밋에서 backfill
+sync_status: audit-ready
+b12_self_test_a: "grep -c 'SPEC-WORKSPACE-ROOT-001' CHANGELOG.md — N/A: 이 프로젝트에 CHANGELOG.md 없음(SPEC 제약에 의해 sync 대상에서 명시적으로 제외됨)"
+b12_self_test_b: "acceptance.md AC 행렬 12개 행(AC-1~AC-12) vs 본 SPEC은 CHANGELOG 미보유이므로 해당 없음"
+b12_self_test_c: "docs 파일 경로 전수 ls 확인 완료 (S1~S7 전부 실존 확인, 아래 changelog_entry_position 참조)"
+changelog_entry_position: "N/A — 이 프로젝트는 CHANGELOG.md를 사용하지 않는다(sync 위임 프롬프트 Context 섹션에 명시)"
+frontmatter_status_transitions:
+  spec_md: "in-progress -> completed"
+  plan_md: "in-progress -> completed"
+  acceptance_md: "in-progress -> completed"
+  progress_md: "in-progress -> completed"
+canary_compliance_check:
+  body_content_modified: false   # spec/plan/acceptance 본문 미수정, frontmatter(status/updated)만 갱신
+  source_code_modified: false    # Rust/TS 소스 미수정 (git show --stat로 검증)
+  ac11_all_items: "12/12 PASS (11-a~11-l, 11-f2 포함 총 14개 세부 항목 전부 PASS; 11-d/11-k는 human-verified)"
+```
+
+**D.4.2 sync 단계 종료 게이트 체크**
+
+- [x] AC-11 체크리스트 11-a ~ 11-l (11-f2 포함, 총 14항목) 전부 충족
+- [x] `docs/ADR-013-*.md` 신규 작성 — 한국어, 4개 절, `rfd` vs `tauri-plugin-dialog` 결정 포함
+- [x] `GUIDE-command-palette.md` 두 커맨드 3불릿 + 책상/칸 어휘 준수
+- [x] `GUIDE-features-easy.md` / `README.md` / `PLAN-M1-M2-roadmap.md` 갱신
+- [x] `DEVELOPMENT.md` 상태 요약(schemaVersion 8, 테스트 113개, autotest 36개, ADR-001~013) + 모듈 지도/레시피/함정 갱신
+- [x] `ARCHITECTURE.md` 영속화 목록에 `rootDir` 추가
+- [x] D.4.1(run 단계 종료 게이트)이 이미 통과된 상태임(§E.3 참조)
 
 ## §F Phase 4 Mode Selection
 

@@ -156,6 +156,14 @@ Claude Code처럼 화면에 글자를 계속 쏟아내는 프로그램 위에서
 레시피의 시작 명령(`startupCommand`)은 셸 안에서 실행되므로 명령이 끝나도
 칸은 살아있는 명령창으로 남습니다. 예제: `examples/templates/`
 
+## 워크스페이스 시작 폴더
+
+책상(워크스페이스)마다 **시작 폴더**를 지정해 둘 수 있습니다
+([ADR-013](docs/ADR-013-workspace-root-folder.md)). 사이드바에서 책상을
+우클릭 → "Choose folder…"로 폴더를 고르면, 그 책상의 모든 칸이 다음부터는
+그 폴더에서 셸을 엽니다(앱을 완전히 종료했다가 다시 켤 때부터 적용).
+지정하지 않으면 지금까지와 동일하게 동작합니다.
+
 ## 외부 프로그램 연결 (컨트롤 API, 개발자용)
 
 직접 만든 감시원 프로그램(브로커)이 terminal-f를 읽고 조작할 수 있는 공식
@@ -181,5 +189,5 @@ Claude Code처럼 화면에 글자를 계속 쏟아내는 프로그램 위에서
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 시스템 설계
 - [docs/PLAN-M1-M2-roadmap.md](docs/PLAN-M1-M2-roadmap.md) — 기능 로드맵과
   구현 현황
-- docs/ 안의 ADR-001~010 — 기능별 설계 결정 기록
+- docs/ 안의 ADR-001~013 — 기능별 설계 결정 기록
 - [docs/BENCHMARK.md](docs/BENCHMARK.md) — 성능 측정 방법/결과

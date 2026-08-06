@@ -261,6 +261,8 @@ A. 책상 배치는 저장되어 다음에 그대로 복원되지만, 돌아가�
 | **Links: Enable/Disable Ctrl+click to open URLs** | 출력의 http/https 링크를 Ctrl+클릭으로 브라우저에서 열기 켜기/끄기 (기본 켜짐, http/https만 허용) |
 | **Shell: Enable multiline in PowerShell** | 일반 PowerShell 프롬프트에서도 Ctrl/Shift+Enter로 줄바꿈되게 프로필에 설정(1회, 확인 후) |
 | **Shell: Enable live directory tracking** | split로 새 칸을 열 때 지금 있는 디렉터리에서 열리게 프로필에 설정(1회, 확인 후, 새 칸 필요). 예전 버전이 깔려 있으면 다시 실행 시 "Update"로 최신 스니펫으로 갱신 |
+| **Workspace: Set root folder…** | 이 책상의 **시작 폴더**를 폴더 선택 창으로 지정. 다음에 책상을 열 때부터 모든 칸이 그 폴더에서 시작 |
+| **Workspace: Clear root folder** | 지정해 둔 시작 폴더를 해제(각 칸의 현재 경로는 그대로 유지) |
 | **Theme: …** | 색 테마 바꾸기 (Catppuccin Mocha/Latte, One Dark, Solarized Light, Campbell PowerShell) |
 
 ### 6.2 매크로(레시피) — ⏳ 안정화 후 본격 사용 예정

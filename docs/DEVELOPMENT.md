@@ -16,15 +16,19 @@ Windows 네이티브 터미널 에뮬레이터. **Tauri 2 + Rust 백엔드**(por
 자동화 규칙, 주입 게이트 전부 Rust가 소유하고, 프론트는 렌더링과 커맨드
 호출만 한다. 프론트에서 레이아웃을 직접 바꾸는 코드를 추가하면 안 된다.
 
-구현 완료 상태 (2026-07-05): M0 코어 + Phase A(UI) + M2.0(주입 게이트) +
+구현 완료 상태 (2026-08-06): M0 코어 + Phase A(UI) + M2.0(주입 게이트) +
 M2.1(rule engine) + M2.1.5(timer) + M2.2(named pipe 컨트롤 API) +
 Phase B(템플릿) + 이미지 붙여넣기/파일 드롭 브리지 +
 UX①~④ 전부 완료: ①복사(스마트 Ctrl+C / Ctrl+Shift+C / 우클릭 / copy-on-select
 / OSC 52) + ②Ctrl+Enter 멀티라인(IME 순서 안전 + pwsh Alt+Enter opt-in) +
 ③라이브 cwd(OSC 9;9 셸 통합, ADR-011) + ④Campbell PowerShell 테마.
 ③라이브 cwd 위에 URL Ctrl+클릭 열기(web-links addon + 스킴 화이트리스트,
-ADR-012)까지. config schemaVersion **7**. Rust 테스트 92개(scan_cwd 6 / shellint 7 /
-is_safe_external_url 3 포함), autotest 32개 검사(IME 출력 버퍼링 포함). ADR-001~012.
+ADR-012)까지. 워크스페이스 시작 폴더(root folder, `rfd` 네이티브 폴더
+대화상자, ADR-013)까지 완료. config schemaVersion **8**. Rust 테스트 113개
+(scan_cwd 6 / shellint 7 / is_safe_external_url 3 / normalize_str_ 6 /
+normalize_validated_ 5 포함, 1개는 샌드박스 환경 한정 pre-existing 실패),
+autotest 36개 검사(IME 출력 버퍼링 + rootDirSet/rootDirRewritesPanes/
+rootDirRejectsMissing/rootDirCleared 포함). ADR-001~013.
 
 ---
 
@@ -35,13 +39,13 @@ is_safe_external_url 3 포함), autotest 32개 검사(IME 출력 버퍼링 포�
 | 파일 | 역할 |
 |---|---|
 | `lib.rs` | 앱 부팅: config 로드 → AppState 구성 → emitter/automation/pipe 스레드 기동 → 커맨드 등록. **새 tauri 커맨드는 여기 `invoke_handler`에 반드시 등록** |
-| `model.rs` | 직렬화 모델(Config, Workspace, PaneNode, PaneLeaf, SplitNode). `CONFIG_SCHEMA_VERSION` 상수. `now_ms()`, `new_id()` |
+| `model.rs` | 직렬화 모델(Config, Workspace, PaneNode, PaneLeaf, SplitNode). `CONFIG_SCHEMA_VERSION` 상수. `now_ms()`, `new_id()`. `Workspace.root_dir`(시작 폴더), `normalize_root_dir_str`(순수 정규화) + `normalize_root_dir`(존재 검증 포함) |
 | `layout.rs` | pane 이진 트리 연산(split/close/resize/collect/`check_invariants`). 형제 승격, ratio clamp [0.1,0.9] |
-| `state.rs` | `AppState`(store/registry/config_path/injection_paused/automation), `WorkspaceStore`(CRUD, caps, trust), `resolve_inject_target`(라벨→pane, 중복 라벨 거부) |
+| `state.rs` | `AppState`(store/registry/config_path/injection_paused/automation), `WorkspaceStore`(CRUD, caps, trust), `resolve_inject_target`(라벨→pane, 중복 라벨 거부), `set_root_dir`(시작 폴더 설정/해제 + pane cwd 일괄 재작성, `set_color` 대칭 위치) |
 | `config.rs` | 디스크 로드/저장 + `migrate()`. **스키마 버전별 fixture 테스트가 여기 있음** |
 | `session.rs` | `SessionRegistry` + `PtySession`. reader 스레드, ring buffer 적재, spool 적재, idle 추적(`last_output_at`), bracketed-paste 모드 추적, `inject`(게이트 검사), `run_startup`(템플릿 시작 명령) |
 | `output.rs` | 16ms 배치 emitter(pty-output/pty-exit 이벤트), ring buffer(1MiB/1024청크, oldest-drop, seq 부여) |
-| `commands.rs` | 모든 `#[tauri::command]` + `do_inject` 공유 헬퍼 + `handle_pipe_method`(컨트롤 API 라우팅) + 자동화 폴링 진입점 |
+| `commands.rs` | 모든 `#[tauri::command]` + `do_inject` 공유 헬퍼 + `handle_pipe_method`(컨트롤 API 라우팅) + 자동화 폴링 진입점. `set_workspace_root`(파이프 경계에서 root_dir 제거), `pick_folder`(`rfd` 네이티브 폴더 대화상자, `#[tauri::command(async)]`) |
 | `automation.rs` | Rule/RuleSource(gitDiff·timer)/Proposal. **순수 로직**(`RuleRuntime::decide*`)과 부수효과 분리 → 단위테스트 용이 |
 | `audit.rs` | 주입 감사 로그(JSONL append/tail) |
 | `pipe.rs` | named pipe 전송 계층: 인증 핸드셰이크 + 줄 단위 JSON-RPC dispatch. **AppState를 모름**(핸들러 클로저 주입) |
@@ -181,6 +185,7 @@ cd src-tauri; cargo run --bin bench -- --soak-secs 600
 | split한 새 pane이 원본의 현재 디렉터리가 아니라 처음 열린 곳에서 열림 | pwsh `Set-Location`은 프로세스 CWD 안 바꿈 → OSC 9;9 셸 통합으로 해결(ADR-011). reader가 `scan_cwd`로 `last_cwd` 추적, split_pane이 `pane_live_cwd` 우선. OSC가 화면에 찍히면 프론트 `registerOscHandler(9, d=>d.startsWith("9;"))` 확인. 설치 후 새 pane 필요 |
 | "Shell: Enable …" 메뉴 클릭 후 확인 창이 늦게 뜸(특히 새 PC 첫 클릭) | `pwsh_integration_status`가 `$PROFILE` 경로를 알아내려 매 클릭 pwsh를 spawn → PowerShell 콜드 스타트(1s+)가 확인 창을 막음. dev는 pwsh 웜이라 안 느낌. 대응: 프론트가 클릭 즉시 "Checking PowerShell profile…" 상태표시 + 백엔드 `cached_profile_path`로 세션당 1회만 spawn(commands.rs) |
 | 출력의 URL을 클릭해도 안 열림 / 위험한 스킴이 열릴까 걱정 | web-links addon 핸들러가 `shouldActivateLink`(Ctrl/Cmd 필수)로 게이트 → 평클릭은 선택. 열기는 백엔드 `open_external_url`가 `is_safe_external_url`로 http/https만 통과, tauri-plugin-opener(ShellExecute)로 열어 쿼리 `&` 안전. `cmd /c start`·`window.open` 쓰지 말 것(ADR-012) |
+| 워크스페이스 시작 폴더를 지정했는데 해당 폴더가 삭제된 뒤 pane이 엉뚱한 곳(앱 cwd)에서 열림 | `session.rs`의 `if cwd_path.is_dir() { cmd.cwd(cwd_path); }`가 조용히 폴백하는 기존 동작(크래시 없음). `ensure_sessions`가 이를 감지해 기존 `warnings` 벡터에 항목을 추가하므로 `main.ts`의 기존 경고 표시로 노출된다(새 UI 없음, ADR-013) |
 | cwd 셸통합 설치했는데 split이 여전히 안 따라감 | **프롬프트 함수 안에서 `[Console]::Write`로 OSC를 내보내면 PSReadLine 렌더링 경로에서 PTY로 안 나감**. OSC는 프롬프트의 **반환 문자열에 prepend**해야 함(`return $osc + $base`, WT/VSCode 방식). autotest는 파서(직접 주입)뿐 아니라 프롬프트 반환 방출(`cwdPromptEmit`)까지 검증 |
 | 일반 pwsh 프롬프트에서 Ctrl/Shift+Enter 줄바꿈 안 됨 | `\x1b\r`을 pwsh는 ESC(줄 취소)+Enter로 봄. 단 그 시퀀스는 pwsh엔 **Alt+Enter**로 도달하고 Alt+Enter는 언바운드 → opt-in `$PROFILE` 스니펫(shellint.rs, `Set-PSReadLineKeyHandler -Chord 'Alt+Enter' -Function AddLine`)으로 해결. win32-input-mode(WT 방식)는 입력 파이프라인 전면 개편이라 회피. **실전 함정: (1) `$PROFILE`이 OneDrive로 리다이렉트(`OneDrive\문서\PowerShell\...`)되고 폴더가 없을 수 있음 → install은 `create_dir_all` 필수(이미 함). (2) 팔레트 명령을 실제로 실행해야 설치됨(앱 재빌드만으론 안 됨). (3) 설치 후 반드시 **새 pane**을 열어야 프로필 로드됨. 진단: 새 pane에서 `(Get-PSReadLineKeyHandler -Chord Alt+Enter).Function`이 `AddLine`이어야 정상.** |
 

@@ -2,9 +2,9 @@
 id: SPEC-WORKSPACE-ROOT-001
 title: "워크스페이스 시작 폴더 (workspace root folder)"
 version: "0.4.0"
-status: in-progress
+status: completed
 created: 2026-08-05
-updated: 2026-08-05
+updated: 2026-08-06
 author: manager-spec
 priority: P1
 phase: "v0.1.2 target"

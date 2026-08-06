@@ -20,7 +20,6 @@ import {
   firstPaneId,
   type Direction,
   type PaneId,
-  type Rule,
   type SessionInfo,
   type UiPrefs,
   type Workspace,
@@ -600,9 +599,7 @@ registerCommandProvider(() => [
   },
 ]);
 
-// ------------------------------------------------------- injection (M2.0)
-
-let injectionPaused = false;
+// --------------------------------------------------------- pane helpers
 
 function findLeaf(paneId: string) {
   return current ? collectLeaves(current.root).find((l) => l.id === paneId) : undefined;
@@ -611,54 +608,6 @@ function findLeaf(paneId: string) {
 function applyWorkspaceResult(res: { workspace: Workspace }): void {
   current = res.workspace;
   updateHeaders();
-}
-
-async function togglePaneInjection(): Promise<void> {
-  if (!current || !activePaneId) return;
-  const leaf = findLeaf(activePaneId);
-  if (!leaf) return;
-  try {
-    const res = await ipc.setPaneInjection(current.id, activePaneId, !leaf.allowInjection);
-    applyWorkspaceResult(res);
-    showStatus(
-      `Pane injection ${leaf.allowInjection ? "disabled" : "enabled"} (allowlist is per-pane, default off)`,
-    );
-  } catch (e) {
-    showStatus(String(e), true);
-  }
-}
-
-async function togglePaneObserve(): Promise<void> {
-  if (!current || !activePaneId) return;
-  const leaf = findLeaf(activePaneId);
-  if (!leaf) return;
-  try {
-    const res = await ipc.setPaneObserve(current.id, activePaneId, !leaf.allowObserve);
-    applyWorkspaceResult(res);
-    showStatus(
-      `Pane observation ${leaf.allowObserve ? "disabled" : "enabled"} ` +
-        `(control API can ${leaf.allowObserve ? "no longer" : "now"} read this pane's output)`,
-    );
-  } catch (e) {
-    showStatus(String(e), true);
-  }
-}
-
-async function showControlApiInfo(): Promise<void> {
-  try {
-    const info = await ipc.controlApiInfo();
-    listModal("Control API (named pipe)", [
-      `pipe name : ${info.pipeName}`,
-      `info file : ${info.infoPath}`,
-      "",
-      "A broker reads the info file (which also holds the auth token),",
-      "connects to the pipe, sends {method:\"auth\",params:{token}}, then",
-      "listPanes / readOutput / injectPrompt / listRules / runRule.",
-      "Only panes with observation/injection enabled are reachable.",
-    ]);
-  } catch (e) {
-    showStatus(String(e), true);
-  }
 }
 
 async function editPaneLabels(): Promise<void> {
@@ -680,303 +629,9 @@ async function editPaneLabels(): Promise<void> {
   }
 }
 
-async function injectIntoPane(paneId: string, paneNo: number): Promise<void> {
-  const result = await promptModal({
-    title: `Inject prompt into pane ${paneNo} (Ctrl+Enter to send)`,
-    multiline: true,
-    placeholder: "Text to type into the pane…",
-    checkboxLabel: "submit (press Enter after the text)",
-    checkboxInitial: true,
-    okLabel: "Inject",
-  });
-  restoreTermFocus();
-  if (result === null || !result.value) return;
-  try {
-    const receipt = await ipc.injectPrompt({
-      paneId,
-      text: result.value,
-      submit: result.checked,
-    });
-    showStatus(
-      `Injected ${receipt.bytes} bytes into pane ${paneNo}` +
-        (receipt.bracketed ? " (bracketed paste)" : ""),
-    );
-  } catch (e) {
-    showStatus(String(e), true); // busy / not allowed / paused
-  }
-}
-
-async function showAuditLog(): Promise<void> {
-  const entries = await ipc.readAudit(50).catch(() => []);
-  listModal(
-    "Injection audit log (last 50)",
-    entries
-      .map((a) => {
-        const when = new Date(a.ts).toLocaleString();
-        return `${when}  [${a.source}]  pane ${a.paneId.slice(0, 8)}…  ${a.bytes}B${a.submitted ? " ⏎" : ""}  "${a.preview}"`;
-      })
-      .reverse(),
-  );
-}
-
 registerCommandProvider(() => [
-  {
-    id: "inject.togglePane",
-    title: "Injection: Allow/disallow on focused pane",
-    run: () => togglePaneInjection(),
-  },
   { id: "inject.labels", title: "Pane: Edit labels (focused)", run: () => editPaneLabels() },
-  {
-    id: "observe.togglePane",
-    title: "Observe: Allow/disallow output observation on focused pane",
-    run: () => togglePaneObserve(),
-  },
-  {
-    id: "control.info",
-    title: "Control API: Show connection info (named pipe)",
-    run: () => showControlApiInfo(),
-  },
-  {
-    id: "inject.pause",
-    title: injectionPaused
-      ? "Injection: Resume (currently PAUSED)"
-      : "Injection: Pause all (kill switch)",
-    run: async () => {
-      injectionPaused = await ipc.setInjectionPaused(!injectionPaused);
-      showStatus(injectionPaused ? "Injection paused (kill switch ON)" : "Injection resumed");
-    },
-  },
-  { id: "inject.audit", title: "Injection: Show audit log", run: () => showAuditLog() },
 ]);
-
-registerCommandProvider(() => {
-  if (!current) return [];
-  return collectLeaves(current.root)
-    .map((leaf, i) => ({ leaf, no: i + 1 }))
-    .filter(({ leaf }) => leaf.allowInjection)
-    .map(({ leaf, no }) => ({
-      id: `inject.to.${leaf.id}`,
-      title: `Injection: Send prompt to pane ${no}${leaf.labels.length ? ` [${leaf.labels.join(", ")}]` : ""}`,
-      run: () => injectIntoPane(leaf.id, no),
-    }));
-});
-
-// ---------------------------------------------------- automation (M2.1)
-
-async function addGitReviewRule(): Promise<void> {
-  if (!current || !activePaneId) return;
-  const leaf = findLeaf(activePaneId);
-  const repoDefault = leaf?.cwd ?? "";
-  const repoRes = await promptModal({
-    title: "Watch which git repo folder?",
-    initial: repoDefault,
-    placeholder: "C:\\path\\to\\repo",
-  });
-  if (repoRes === null || !repoRes.value.trim()) return;
-  const labelRes = await promptModal({
-    title: "Inject into pane with which label?",
-    placeholder: "codex",
-    checkboxLabel: "auto mode (inject without asking — leave off for confirm)",
-    checkboxInitial: false,
-  });
-  restoreTermFocus();
-  if (labelRes === null || !labelRes.value.trim()) return;
-  const repo = repoRes.value.trim();
-  const label = labelRes.value.trim().toLowerCase();
-  const rule: Rule = {
-    id: crypto.randomUUID(),
-    name: `git review → ${label}`,
-    enabled: true,
-    repo,
-    source: { type: "gitDiff", repo },
-    cooldownMs: 5000,
-    maxPerMin: 4,
-    targetLabel: label,
-    targetPane: null,
-    template: "The working tree changed:\n{{diffStat}}\n\nPlease review the changes.",
-    submit: true,
-    requireIdle: true,
-    mode: labelRes.checked ? "auto" : "confirm",
-  };
-  try {
-    await ipc.upsertRule(rule);
-    await refreshRuleCommands();
-    showStatus(
-      `Rule added (${rule.mode}); watching ${repo}. Target label "${label}" must be on an injection-enabled pane.`,
-    );
-  } catch (e) {
-    showStatus(String(e), true);
-  }
-}
-
-async function addTimerRule(): Promise<void> {
-  if (!current || !activePaneId) return;
-  const minRes = await promptModal({
-    title: "Timer: inject every how many minutes?",
-    initial: "5",
-    placeholder: "5",
-  });
-  if (minRes === null) return;
-  const minutes = Number(minRes.value.trim());
-  if (!Number.isFinite(minutes) || minutes <= 0) {
-    restoreTermFocus();
-    showStatus("Invalid interval", true);
-    return;
-  }
-  const labelRes = await promptModal({
-    title: "Inject into pane with which label?",
-    placeholder: "codex",
-    checkboxLabel: "auto mode (inject without asking — leave off for confirm)",
-    checkboxInitial: false,
-  });
-  const textRes =
-    labelRes && labelRes.value.trim()
-      ? await promptModal({
-          title: "Prompt to inject each interval",
-          multiline: true,
-          initial: "status?",
-        })
-      : null;
-  restoreTermFocus();
-  if (labelRes === null || !labelRes.value.trim() || textRes === null || !textRes.value.trim()) {
-    return;
-  }
-  const label = labelRes.value.trim().toLowerCase();
-  const rule: Rule = {
-    id: crypto.randomUUID(),
-    name: `timer ${minutes}m → ${label}`,
-    enabled: true,
-    repo: "",
-    source: { type: "timer", everyMs: Math.round(minutes * 60_000) },
-    cooldownMs: 0,
-    maxPerMin: 4,
-    targetLabel: label,
-    targetPane: null,
-    template: textRes.value,
-    submit: true,
-    requireIdle: true,
-    mode: labelRes.checked ? "auto" : "confirm",
-  };
-  try {
-    await ipc.upsertRule(rule);
-    await refreshRuleCommands();
-    showStatus(`Timer rule added: every ${minutes}m → "${label}" (${rule.mode})`);
-  } catch (e) {
-    showStatus(String(e), true);
-  }
-}
-
-async function manageRules(): Promise<void> {
-  const rules = await ipc.listRules().catch(() => []);
-  if (rules.length === 0) {
-    showStatus("No automation rules. Use 'Automation: Add git-review rule'.");
-    return;
-  }
-  listModal(
-    "Automation rules",
-    rules.map((r) => {
-      const src = r.source
-        ? r.source.type === "timer"
-          ? `timer ${Math.round(r.source.everyMs / 60000)}m`
-          : `git ${r.source.repo}`
-        : `git ${r.repo}`;
-      return `${r.enabled ? "●" : "○"} ${r.name}  [${r.mode}]  ${src}  →${r.targetLabel ?? r.targetPane ?? "?"}`;
-    }),
-  );
-}
-
-function proposalToast(p: import("./types").Proposal): void {
-  document.getElementById(`proposal-${p.id}`)?.remove();
-  const toast = document.createElement("div");
-  toast.id = `proposal-${p.id}`;
-  toast.className = "toast";
-  const title = document.createElement("div");
-  title.className = "toast-title";
-  title.textContent = `Automation: ${p.ruleName}`;
-  const body = document.createElement("div");
-  body.className = "toast-body";
-  const target = p.targetLabel ? `[${p.targetLabel}]` : (p.targetPane ?? "");
-  body.textContent = `Inject into ${target}: "${p.text.slice(0, 120)}"`;
-  const buttons = document.createElement("div");
-  buttons.className = "toast-buttons";
-  const approve = document.createElement("button");
-  approve.className = "toast-btn primary";
-  approve.textContent = "Approve";
-  const dismiss = document.createElement("button");
-  dismiss.className = "toast-btn";
-  dismiss.textContent = "Dismiss";
-  buttons.append(dismiss, approve);
-  toast.append(title, body, buttons);
-  document.getElementById("toasts")!.appendChild(toast);
-
-  const close = () => toast.remove();
-  approve.addEventListener("click", async () => {
-    try {
-      await ipc.resolveProposal(p.id, true);
-      showStatus(`Injected via rule "${p.ruleName}"`);
-    } catch (e) {
-      showStatus(String(e), true); // busy/paused: proposal is re-queued
-    }
-    close();
-  });
-  dismiss.addEventListener("click", async () => {
-    await ipc.resolveProposal(p.id, false).catch(() => {});
-    close();
-  });
-}
-
-void ipc.onAutomationProposal((p) => proposalToast(p));
-
-registerCommandProvider(() => [
-  {
-    id: "auto.addGitReview",
-    title: "Automation: Add git-review rule (watch folder → inject to label)",
-    run: () => addGitReviewRule(),
-  },
-  {
-    id: "auto.addTimer",
-    title: "Automation: Add timer rule (inject every N minutes → label)",
-    run: () => addTimerRule(),
-  },
-  { id: "auto.list", title: "Automation: List rules", run: () => manageRules() },
-]);
-
-registerCommandProvider(() => automationRuleCommands);
-let automationRuleCommands: import("./commands").CommandItem[] = [];
-async function refreshRuleCommands(): Promise<void> {
-  const rules = await ipc.listRules().catch(() => []);
-  automationRuleCommands = rules.flatMap((r) => [
-    {
-      id: `auto.run.${r.id}`,
-      title: `Automation: Run rule now — ${r.name}`,
-      run: async () => {
-        try {
-          const msg = await ipc.runRuleNow(r.id);
-          showStatus(msg);
-        } catch (e) {
-          showStatus(String(e), true);
-        }
-      },
-    },
-    {
-      id: `auto.toggle.${r.id}`,
-      title: `Automation: ${r.enabled ? "Disable" : "Enable"} rule — ${r.name}`,
-      run: async () => {
-        await ipc.setRuleEnabled(r.id, !r.enabled).catch((e) => showStatus(String(e), true));
-        await refreshRuleCommands();
-      },
-    },
-    {
-      id: `auto.remove.${r.id}`,
-      title: `Automation: Remove rule — ${r.name}`,
-      run: async () => {
-        await ipc.removeRule(r.id).catch(() => {});
-        await refreshRuleCommands();
-        showStatus(`Removed rule "${r.name}"`);
-      },
-    },
-  ]);
-}
 
 registerCommandProvider(() =>
   THEMES.map((t) => ({
@@ -1176,7 +831,6 @@ async function boot(): Promise<void> {
   const target = snap.activeWorkspaceId ?? metas[0]?.id;
   if (target) await switchTo(target);
   window.setInterval(() => void pollActivity(), 1000);
-  void refreshRuleCommands();
   void refreshTemplateCommands();
 
   // File drag-drop (ADR-010): Tauri intercepts OS file drops (HTML5 drop

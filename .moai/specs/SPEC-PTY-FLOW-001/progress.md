@@ -22,6 +22,19 @@ Phase 1 Plan Audit Gate (re-run on v0.2.1, 2026-08-12): **PASS, 0.92** (Tier M t
 - Gaps: 커버리지 수치 별도 미측정(21개 단위 테스트로 핵심 순수 로직 커버). @MX 태그 부착(ANCHOR 워터마크·불변식 / WARN park·밸브, ko).
 - Residual-risk: detect_shell 테스트는 shell이 PATH에 있어야 함(PowerShell에서 cargo 권장). M3 bench가 사용할 ack 합성·상수 주입은 FlowConfig로 이미 지원.
 
+### M2 — 프론트엔드 ack/parsedSeq/드레인 (완료 2026-08-12, 커밋 5d26a52)
+
+- 위임: manager-develop 에이전트가 1-pass 완료(429 없음 — 할당량 해소). 오키스트레이터 독립 검증 완료.
+- `terms.ts`: writeOutput→writeParsed(data,cb) 전환, ack 배치(R9: ACK_BATCH_BYTES 4KiB / ACK_FLUSH_IDLE_MS 50ms), appendOutput(IME 보류)은 heldAckBytes 누적만(R12), flushAckNow(ackInFlight 추적), snapshotAndDispose 드레인(Promise.race + SNAPSHOT_DRAIN_TIMEOUT_MS 500ms, R11), serialize 직전 flushAckNow await(R15 late-ack).
+- `main.ts`: receivedSeq/parsedSeq 분리(R10), pty-output 핸들러는 receivedSeq만 전진(AC-10b), replayInFlight+pendingReplayEvents로 replay 중 이벤트 지연(R10-N2), writeParsedNoAck로 replay 미ack(R13), switchTo가 snapshotAndDispose await(R15).
+- `ipc.ts`: ackOutput 래퍼(R2).
+- tsc --noEmit: **exit 0** (에이전트 + 오키스트레이터 양쪽 독립 확인 — node `~/bin/node`).
+- AC-10b grep PASS: 핸들러(main.ts:809) receivedSeq만; parsedSeq는 writeParsed cb(terms.ts:252)·mountPane 설정만.
+- AC-10c grep PASS: ackOutput 유일 호출(terms.ts:313 flushAckNow); appendOutput(207-217)에 ack 호출 없음(R12).
+- @MX: terms.ts 6개(ANCHOR parsedSeq 불변식, WARN R15 await 의무, NOTE x4).
+- Gaps: autotest 동작 검증(AC-9/10a)·bench soak(AC-11)은 M3 소관. 실기기 IME는 §D.3 잔여위험.
+- Residual-risk: 전환 직전 ack invoke 백엔드 도달 순서는 Tauri 커맨드 큐 FIFO 가정에 의존(프로젝트 단일 스레드 순차 처리로 성립). 워터마크 seed는 개발기기 계측 기반.
+
 ## §E.3 Run-phase Audit-Ready Signal
 
 _<pending run-phase>_

@@ -35,9 +35,29 @@ Phase 1 Plan Audit Gate (re-run on v0.2.1, 2026-08-12): **PASS, 0.92** (Tier M t
 - Gaps: autotest 동작 검증(AC-9/10a)·bench soak(AC-11)은 M3 소관. 실기기 IME는 §D.3 잔여위험.
 - Residual-risk: 전환 직전 ack invoke 백엔드 도달 순서는 Tauri 커맨드 큐 FIFO 가정에 의존(프로젝트 단일 스레드 순차 처리로 성립). 워터마크 seed는 개발기기 계측 기반.
 
+### R4 reader-park 게이트 단위 수정 (버그 픽스, 커밋 1c6c55d)
+
+- 결함: `check_reader_park_gate` 가 미방출 **청크 수**(seq 차이, 최대 ~1024)를 `ring_pause_threshold`(**바이트**, 768KiB)와 비교 → reader park 가 실제로 발동 안 함(R4 MUST 무력화 — 활성 팬 홍수 시 자식 write() 블로킹이 안 돼 oldest-drop 유실 경로로 폴백). M3 bench(311샘플 전부 reader_parked=false)로 발견됨.
+- 수정: `RingBuffer::un_emitted_bytes(from_seq)` 추가, `check_reader_park_gate` + 신규 비블로킹 관측 helper `reader_should_park_now` 를 바이트 기준으로 전환.
+- RED→GREEN: 재현 테스트 `ac_3_reader_park_gate_uses_bytes_not_chunks`(청크 1개 + 임계 초과 바이트 → true) — RED 확정 후 수정으로 GREEN.
+- 종단 검증: bench 재실행 시 `reader_parked false→true` 전이 관측(outstandingEndA ~814KiB > 768KiB), `flow_ok=true`, `oldest_drop_during_ack=0`.
+- 135 tests green, clippy NEW 0. (gap 1 — `spawn_session`의 FlowConfig 주입 경로는 별개 개선과제; default config로 reader park 관측 가능했으므로 본 수정에 불필요.)
+
 ## §E.3 Run-phase Audit-Ready Signal
 
-_<pending run-phase>_
+run_status: audit-ready (with documented Gap — autotest 행동 run 연기)
+run_complete_at: 2026-08-12
+run_commit_sha: 1c6c55d
+
+run-phase commits: `3c01b46`(M1 RED) → `9cc45c8`(M1 GREEN) → `5d26a52`(M2) → `0439cf7`(M3) → `1c6c55d`(R4 fix).
+
+AC status:
+- **MUST PASS** (단위/구조/bench): AC-1, AC-2, AC-3, AC-4, AC-5, AC-6, AC-7(`cargo test` 135 green), AC-10b, AC-10c, AC-14, AC-15 — 전부 PASS.
+- **MUST (행동 run 연기)**: AC-8(autotest 32체크), AC-9(flood), AC-10a(switch-under-load) — 구조 구현 완료 + tsc 통과. 행동 run 은 `TERMF_AUTOTEST=1` 함정(terminal-f 팬 안 실행 시 사용자 세션 Kill 위험)으로 **사용자가 별도 Windows Terminal에서 실행 필요**: `cd C:\project\terminal-f && set TERMF_AUTOTEST=1 && cargo tauri dev`, 종료 후 `autotest-report.json`의 `report.flowControl.*` 판독.
+- **SHOULD**: AC-11(bench soak) PASS(`flow_ok=true`, reader_parked 관측 — R4 fix 후), AC-13(@MX) 부착.
+- **sync**: AC-12(ADR-014) — sync 단계 책임.
+
+Gaps: AC-8/9/10a 행동 run 연기(사용자 실행 전제). 실기기 IME 검증(§D.3). gap 1(FlowConfig 주입 경로) — 별개 개선.
 
 ## §E.4 Sync-phase Audit-Ready Signal
 

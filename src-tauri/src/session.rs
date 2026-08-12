@@ -149,6 +149,9 @@ pub struct PtySession {
     /// ADR-011). None until the shell emits it. split_pane prefers this over
     /// the creation-time `cwd` so a new pane opens in the current directory.
     pub last_cwd: Mutex<Option<String>>,
+    /// SPEC-PTY-FLOW-001 — per-session flow-control state (R1).
+    /// ack-watermark 회계 + reader park condvar + 정지 밸브 + 회계 리셋을 통합.
+    pub flow_state: crate::flow_state::FlowState,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -506,6 +509,7 @@ impl SessionRegistry {
             spool: Mutex::new(None),
             spool_path,
             last_cwd: Mutex::new(None),
+            flow_state: crate::flow_state::FlowState::default(),
         });
 
         let join = spawn_reader_thread(Arc::clone(&session), reader);
@@ -582,6 +586,14 @@ impl SessionRegistry {
             return Err(format!("session for pane {pane_id} is not running"));
         }
         if require_idle {
+            // SPEC-PTY-FLOW-001 R7 — flow-paused(reader park) 중인 세션은 BUSY 로
+            // 판정한다. park 중에는 last_output_at 이 갱신되지 않아 홍수 와중에도
+            // 거짓 "idle" 이 나는 것을 막는다(AC-6).
+            if session.flow_state.is_reader_parked() {
+                return Err(
+                    "target pane is busy (flow-paused: reader parked for backpressure). Retry when the pane catches up or pass requireIdle=false".to_string(),
+                );
+            }
             let idle_for = session.last_output_at.lock().unwrap().elapsed();
             if idle_for < std::time::Duration::from_millis(idle_ms) {
                 return Err(format!(
@@ -641,13 +653,27 @@ impl SessionRegistry {
 
     /// Fetch buffered output after `from_seq` and re-arm live event emission
     /// from the end of the returned range.
+    ///
+    /// SPEC-PTY-FLOW-001 R16: `collect_since` + `last_emitted_seq.store` 가
+    /// 동일한 ring 락 범위에서 수행되어 pump_once 의 collect+store 와 직렬화된다.
+    /// 그렇지 않으면 pump 가 옛 last_emitted_seq 를 로드한 뒤 replay 가 저장한
+    /// 더 새로운 last_seq 를 덮어쓰는 되감김 경합이 발생한다(plan §A.9).
+    /// R15(ii): 재무장 시 회계 리셋을 동반하여 좌초 outstanding 이 emitter 를
+    /// 영구 잠그지 않는다(AC-14 핵심 케이스).
     pub fn replay(&self, pane_id: &str, from_seq: u64) -> Result<ReplayResult, String> {
         let session = self
             .session_for_pane(pane_id)
             .ok_or_else(|| format!("no session for pane {pane_id}"))?;
-        let (data, last_seq, dropped) = session.ring.lock().unwrap().collect_since(from_seq);
-        session.last_emitted_seq.store(last_seq, Ordering::SeqCst);
+        // R16: collect + store 를 동일 ring 락 안에서 수행.
+        let (data, last_seq, dropped) = {
+            let ring = session.ring.lock().unwrap();
+            let (data, last_seq, dropped) = ring.collect_since(from_seq);
+            session.last_emitted_seq.store(last_seq, Ordering::SeqCst);
+            (data, last_seq, dropped)
+        };
         session.replay_synced.store(true, Ordering::SeqCst);
+        // R15(ii): 재무장 시 회계 리셋.
+        session.flow_state.reset_accounting();
         let state = *session.state.lock().unwrap();
         Ok(ReplayResult {
             data,
@@ -656,6 +682,22 @@ impl SessionRegistry {
             session_id: session.session_id.clone(),
             state,
         })
+    }
+
+    /// SPEC-PTY-FLOW-001 R2 — ack 수신 커맨드의 registry 진입점.
+    /// 미지 pane 에 대한 ack는 Err 없이 조용히 무시된다(R2 — 전환/teardown 경합의 정상 경로).
+    pub fn ack_output(&self, pane_id: &str, bytes: u64) -> Result<(), String> {
+        if let Some(session) = self.session_for_pane(pane_id) {
+            session.flow_state.record_ack(bytes);
+        }
+        Ok(())
+    }
+
+    /// SPEC-PTY-FLOW-001 R1 — 관측 창구(`flow_stats` 커맨드 원천).
+    /// 미지 pane 에 대해서는 None.
+    pub fn flow_stats(&self, pane_id: &str) -> Option<crate::flow_state::FlowStats> {
+        self.session_for_pane(pane_id)
+            .map(|s| s.flow_state.flow_stats())
     }
 
     /// Run a template `startupCommand` in a freshly spawned session: wait for
@@ -749,6 +791,10 @@ impl SessionRegistry {
         for sid in unsync {
             if let Some(s) = inner.sessions.get(&sid) {
                 s.replay_synced.store(false, Ordering::SeqCst);
+                // SPEC-PTY-FLOW-001 R15(i): live 모드 이탈 시 회계 리셋.
+                // 전환으로 좌초된 outstanding(pending write 콜백 소멸 + replay 미ack)이
+                // emitter 게이트를 영구 잠그는 것을 막는다(AC-14).
+                s.flow_state.reset_accounting();
             }
         }
         inner.active_workspace = workspace_id.map(String::from);
@@ -861,6 +907,23 @@ impl SessionRegistry {
     }
 }
 
+impl PtySession {
+    /// SPEC-PTY-FLOW-001 R4 — reader 게이트 진입점.
+    /// ring 의 미방출 바이트(un-emitted)와 replay_synced 를 평가하여,
+    /// 필요하면 `flow_state.check_park_and_wait` 로 condvar park 한다.
+    /// 락 순서: ring 락 → flow_inner 락(잠깐) → release. registry 락은 잡지 않는다.
+    pub fn check_reader_park_gate(&self) -> bool {
+        let last_emitted = self.last_emitted_seq.load(Ordering::SeqCst);
+        let un_emitted = {
+            let r = self.ring.lock().unwrap();
+            r.last_seq().saturating_sub(last_emitted) as usize
+        };
+        let replay_synced = self.replay_synced.load(Ordering::SeqCst);
+        self.flow_state
+            .check_park_and_wait(un_emitted, replay_synced)
+    }
+}
+
 fn spawn_reader_thread(
     session: Arc<PtySession>,
     mut reader: Box<dyn Read + Send>,
@@ -873,6 +936,12 @@ fn spawn_reader_thread(
             // Carry buffer for cwd OSC sequences that straddle read chunks.
             let mut cwd_buf = String::new();
             loop {
+                // SPEC-PTY-FLOW-001 R4 — reader 게이트: read() 호출 이전에 park 검사.
+                // live(replay_synced) + ring 의 미방출 바이트가 RING_PAUSE_THRESHOLD 를
+                // 초과하면 ConPTY 파이프가 차오를 때까지 read 를 멈춰 자식 write()를
+                // 블로킹한다. park 전용 뮤텍스만 잡고 registry 락은 잡지 않는다(§A.4).
+                session.check_reader_park_gate();
+
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
@@ -927,8 +996,14 @@ fn spawn_reader_thread(
 
 /// Kill the child, drop the ConPTY handles (which unblocks the reader at EOF),
 /// then join the reader thread.
+///
+/// SPEC-PTY-FLOW-001 R8 — condvar signal **이전에** disarm 플래그를 설정한다.
+/// teardown 은 replay_synced 를 지우지 않으므로 disarm 없이 깨어난 reader 가
+/// ring 임계 초과를 재확인하고 영원히 재park 하여 join 이 교착하는 것을 막는다(AC-5).
 fn teardown_session(session: &Arc<PtySession>) {
     *session.state.lock().unwrap() = Lifecycle::Closing;
+    // R8: disarm 선행 — park 중이던 reader 가 signal 에 깨어난 뒤 재park 없이 join.
+    session.flow_state.disarm_for_teardown();
     if let Some(child) = session.child.lock().unwrap().as_mut() {
         let _ = child.kill();
     }
@@ -1081,5 +1156,66 @@ mod tests {
         let (c, consumed) = scan_cwd(s);
         assert_eq!(c.as_deref(), Some("C:\\프로젝트"));
         assert_eq!(consumed, s.len());
+    }
+}
+
+// ---- SPEC-PTY-FLOW-001 M1 테스트 헬퍼 ----
+// flow_tests.rs 에서 PTY 없이 세션/레지스트리를 구성하기 위한 진입점.
+// 본 진입점이 없으면 flow_tests 의 AC-6/AC-14/AC-15 테스트가 실 PTY spawn 에
+// 의존하게 되어 단위 테스트 속성을 잃는다.
+// 배치: 본 헬퍼 impl 들은 mod tests 뒤에 둔다 — 테스트 전용 진입점이므로
+// items_after_test_module 린트는 허용(flow_tests.rs 가 crate::session::PtySession::new_test
+// 경로로 접근해야 해서 mod tests 안으로 옮기면 경로가 깨짐).
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+impl PtySession {
+    /// PTY/reader 없는 테스트용 세션 생성. ring 크기는 프로덕션과 동일.
+    pub fn new_test(workspace_id: &str, pane_id: &str) -> PtySession {
+        PtySession {
+            session_id: crate::model::new_id(),
+            workspace_id: workspace_id.to_string(),
+            pane_id: pane_id.to_string(),
+            command: "test".to_string(),
+            cwd: ".".to_string(),
+            state: Mutex::new(Lifecycle::Running),
+            exit_code: Mutex::new(None),
+            ring: Mutex::new(RingBuffer::new(RING_MAX_BYTES, RING_MAX_CHUNKS)),
+            writer: Mutex::new(None),
+            master: Mutex::new(None),
+            child: Mutex::new(None),
+            reader_join: Mutex::new(None),
+            last_emitted_seq: AtomicU64::new(0),
+            replay_synced: AtomicBool::new(false),
+            exit_notified: AtomicBool::new(false),
+            last_output_at: Mutex::new(std::time::Instant::now()),
+            bracketed_paste: AtomicBool::new(false),
+            observe: AtomicBool::new(false),
+            spool: Mutex::new(None),
+            spool_path: std::env::temp_dir().join("terminal-f-test.log"),
+            last_cwd: Mutex::new(None),
+            flow_state: crate::flow_state::FlowState::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+impl SessionRegistry {
+    /// 테스트용 세션을 레지스트리에 삽입(PTY spawn 없이).
+    /// active_sessions_snapshot / session_for_pane / ack_output / replay 등이
+    /// 이 세션을 보도록 한다.
+    pub fn insert_test_session(&self, session: Arc<PtySession>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner
+            .sessions
+            .insert(session.session_id.clone(), Arc::clone(&session));
+        inner
+            .pane_to_session
+            .insert(session.pane_id.clone(), session.session_id.clone());
+        inner
+            .workspace_to_sessions
+            .entry(session.workspace_id.clone())
+            .or_default()
+            .push(session.session_id.clone());
     }
 }

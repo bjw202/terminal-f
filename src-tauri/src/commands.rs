@@ -1523,6 +1523,27 @@ pub fn replay_pane(
     state.registry.replay(&pane_id, from_seq)
 }
 
+/// SPEC-PTY-FLOW-001 R2 — 프론트엔드가 파싱 완료한 바이트를 ack 로 보고.
+/// 미지 pane 에 대한 ack는 Err 없이 조용히 무시된다(R2).
+#[tauri::command]
+pub fn ack_output(
+    state: State<'_, AppState>,
+    pane_id: String,
+    bytes: u64,
+) -> Result<(), String> {
+    state.registry.ack_output(&pane_id, bytes)
+}
+
+/// SPEC-PTY-FLOW-001 R1 — 흐름 제어 관측 창구(autotest/bench/프론트 디버그).
+/// 백엔드 원자 변수의 유일한 외부 관측 경로(R1). 미지 pane → None.
+#[tauri::command]
+pub fn flow_stats(
+    state: State<'_, AppState>,
+    pane_id: String,
+) -> Result<Option<crate::flow_state::FlowStats>, String> {
+    Ok(state.registry.flow_stats(&pane_id))
+}
+
 // ---------------------------------------------------------------- misc
 
 #[tauri::command]

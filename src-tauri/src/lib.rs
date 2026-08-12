@@ -2,6 +2,7 @@ pub mod audit;
 pub mod automation;
 pub mod commands;
 pub mod config;
+pub mod flow_state;
 pub mod layout;
 pub mod model;
 pub mod output;
@@ -13,8 +14,7 @@ pub mod spool;
 pub mod state;
 pub mod template;
 
-// SPEC-PTY-FLOW-001 M1 — 흐름 제어 단위 테스트. 본 모듈 선언은 cargo test에서만
-// 활성화되며, GREEN 구현(crate::flow_state)이 없는 RED 단계에서는 컴파일 실패해야 한다.
+// SPEC-PTY-FLOW-001 M1 — 흐름 제어 단위 테스트.
 #[cfg(test)]
 mod flow_tests;
 
@@ -176,6 +176,8 @@ pub fn run() {
             commands::install_pwsh_integration,
             commands::resize_pty,
             commands::replay_pane,
+            commands::ack_output,
+            commands::flow_stats,
             commands::get_boot_info,
             commands::memory_stats,
             commands::autotest_report,

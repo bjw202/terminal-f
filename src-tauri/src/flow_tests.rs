@@ -38,7 +38,9 @@ fn ac_1_emitter_gate_skip_above_high() {
 fn ac_1_emitter_gate_hysteresis_between_low_and_high() {
     let fs = FlowState::default();
     fs.record_emit(FLOW_HIGH_WATERMARK + 1); // outstanding > HIGH
-    let mut paused = fs.emitter_gate_decision(false);
+    // emitter_gate_decision 은 emit 여부(true=방출)를 반환하므로,
+    // "현재 정지 상태인가"는 !decision 이다.
+    let mut paused = !fs.emitter_gate_decision(false);
     assert!(paused, "HIGH 초과 → 정지");
 
     // outstanding이 LOW와 HIGH 사이로 내려가도 직전 상태(정지) 유지 — 히스테리시스.
@@ -58,7 +60,7 @@ fn ac_1_emitter_gate_hysteresis_between_low_and_high() {
     paused = false;
 
     // 재개 후에는 LOW~HIGH로 올라가도 계속 방출(직전 상태 = 방출).
-    fs.record_emit((FLOW_LOW_WATERMARK + (FLOW_HIGH_WATERMARK - FLOW_LOW_WATERMARK) / 2) as u64);
+    fs.record_emit(FLOW_LOW_WATERMARK + (FLOW_HIGH_WATERMARK - FLOW_LOW_WATERMARK) / 2);
     let decision_mid_after_resume = fs.emitter_gate_decision(paused);
     assert!(
         decision_mid_after_resume,
@@ -163,32 +165,38 @@ fn ac_4_valve_fires_after_stall_no_ack_progress() {
 #[test]
 fn ac_4_valve_resets_timer_on_ack_progress() {
     let cfg = FlowConfig {
-        stall_timeout: Duration::from_millis(200),
+        stall_timeout: Duration::from_millis(400),
         park_recheck: Duration::from_millis(50),
         ..Default::default()
     };
-    let fs = FlowState::default();
-    fs.config = cfg; // 테스트용 config 교체 (필드 pub)
+    let fs = Arc::new(FlowState::with_config(cfg));
     fs.set_replay_synced_for_test(true);
     fs.record_emit(RING_PAUSE_THRESHOLD + 1024);
 
-    let fs_t = Arc::new(Arc::new(fs));
-    let fs_worker = Arc::clone(&fs_t);
+    // worker는 park loop에 진입 — ack 진전이 stall 타이머를 리셋하는지 확인.
+    // 매 50ms마다 wait_timeout → 400ms 누적 시 valve 발화. 그 전에 ack를 주면
+    // last_ack_at이 갱신되어 타이머가 리셋 → valve가 바로 발화하지 않음.
+    let fs_worker = Arc::clone(&fs);
     let handle = std::thread::spawn(move || {
-        // 짧게 park — ack 진전이 stall 타이머를 리셋하는지 확인
         fs_worker.check_park_and_wait(RING_PAUSE_THRESHOLD + 1024, true)
     });
-    // worker가 park 진입 후 ack를 주입 — stall 타이머 리셋
-    std::thread::sleep(Duration::from_millis(30));
-    fs_t.record_ack(1024);
-    // worker가 빠르게 끝나야 함 (valve 조기 발화 없이, ack로 park 조건이 여전히 참이므로
-    // stall_timeout까지 대기 후 valve 발화). ack 진전 순간 last_ack_progress 갱신.
-    // ack 후에도 un_emitted는 여전히 임계 초과이므로 park 지속 → 결국 valve.
+    // worker가 park에 들어간 뒤 ack 주입.
+    std::thread::sleep(Duration::from_millis(80));
+    let t0 = Instant::now();
+    fs.record_ack(1024);
+    // ack 후 단기간(150ms)에는 valve가 발화하지 않아야 한다(stall_timeout=400ms 대비).
+    std::thread::sleep(Duration::from_millis(150));
+    let early = fs.valve_fired_count();
+    let early_elapsed = t0.elapsed();
     let _ = handle.join();
-    // 검증: valve가 ack 진전 분량만큼 지연되어 발화 (즉, stall_timeout 이내에 발화하지 않음)
+    assert_eq!(
+        early, 0,
+        "ack 진전 후 단기간(150ms < stall 400ms)에는 valve 발화하지 않음"
+    );
     assert!(
-        fs_t.valve_fired_count() >= 0,
-        "ack 진전 시 타이머 리셋 — 검증 허용치 내"
+        early_elapsed < Duration::from_millis(300),
+        "단기간 확인 구간 초과하지 않음 (경과: {:?})",
+        early_elapsed
     );
 }
 
@@ -326,18 +334,30 @@ fn ac_14_outstanding_above_high_then_resume_after_rearm() {
     session.ring.lock().unwrap().push("hello".into());
 
     // 2) pump — 게이트에 막혀 방출 없음.
-    let mut emitted = 0usize;
-    pump_once(&reg, &|_: PtyOutputEvent| emitted += 1, &|_| {});
-    assert_eq!(emitted, 0, "outstanding > HIGH → emitter 게이트 막힘");
+    let emitted: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+    pump_once(
+        &reg,
+        &|_: PtyOutputEvent| *emitted.lock().unwrap() += 1,
+        &|_| {},
+    );
+    assert_eq!(*emitted.lock().unwrap(), 0, "outstanding > HIGH → emitter 게이트 막힘");
 
     // 3) 전환/재무장 — replay 호출 → 회계 리셋.
     reg.replay(&pane_id, 0).unwrap();
     assert_eq!(session.flow_state.outstanding(), 0, "재무장 후 outstanding=0");
 
+    // 3.5) reset 후 새 live 데이터 도착 — replay가 last_emitted_seq를 끝까지
+    // 전진시켰으므로, "재개"를 보이려면 새 청크가 필요하다 (AC-14 핵심: 영구 정지 아님).
+    session.ring.lock().unwrap().push("world".into());
+
     // 4) pump 재시도 — 이제 방출 재개.
-    pump_once(&reg, &|_: PtyOutputEvent| emitted += 1, &|_| {});
+    pump_once(
+        &reg,
+        &|_: PtyOutputEvent| *emitted.lock().unwrap() += 1,
+        &|_| {},
+    );
     assert!(
-        emitted >= 1,
+        *emitted.lock().unwrap() >= 1,
         "재무장+리셋 후 live 방출 재개 (영구 정지 아님, AC-14 핵심)"
     );
 }
@@ -414,7 +434,11 @@ fn ac_15_replay_then_pump_no_overlap() {
     assert_eq!(session.last_emitted_seq.load(Ordering::SeqCst), 5);
 
     // pump — 더 이상 방출할 게 없어야 한다(replay가 이미 5까지 전진시킴).
-    let mut emitted = 0;
-    pump_once(&reg, &|_: PtyOutputEvent| emitted += 1, &|_| {});
-    assert_eq!(emitted, 0, "replay 후 pump는 중복 방출 없음 (R16)");
+    let emitted: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+    pump_once(
+        &reg,
+        &|_: PtyOutputEvent| *emitted.lock().unwrap() += 1,
+        &|_| {},
+    );
+    assert_eq!(*emitted.lock().unwrap(), 0, "replay 후 pump은 중복 방출 없음 (R16)");
 }

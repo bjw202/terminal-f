@@ -119,6 +119,17 @@ export interface MemoryStats {
   liveSessions: number;
 }
 
+// SPEC-PTY-FLOW-001 R1 — 흐름 제어 관측 창구(flow_stats 커맨드 원천).
+// 백엔드 원자 변수의 유일한 프론트 관측 경로. autotest flood 체크(AC-9)가
+// outstanding/emitterPaused/readerParked 를 기계 판정하는 데 사용한다.
+export interface FlowStats {
+  emitted: number;
+  acked: number;
+  outstanding: number;
+  emitterPaused: boolean;
+  readerParked: boolean;
+}
+
 export interface InjectReceipt {
   paneId: PaneId;
   sessionId: SessionId;

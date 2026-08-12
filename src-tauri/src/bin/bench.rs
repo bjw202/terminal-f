@@ -252,6 +252,156 @@ fn main() {
     report.insert("soak_rss_samples".into(), samples.into());
     report.insert("soak_emitted_batches".into(), emitted_events.into());
 
+    // ---- 5. SPEC-PTY-FLOW-001 M3: flow-control soak (AC-11) ---------------
+    // @MX:NOTE: headless bench 에서 흐름 제어(ack-watermark)를 관측한다.
+    // plan §B.5: headless bench 는 프론트엔드가 없어 ack=0 → outstanding 이
+    // 즉시 HIGH(128 KiB) 도달해 emitter 가 정지(R3)한다. Phase A(ack 없음)에서
+    // emitter 정지 + outstanding 증가를 관측하고, Phase B(ack 합성)에서 ack 가
+    // outstanding 을 drain 하여 emitter 가 재개되고 ack 흐름 중 oldest-drop 가
+    // 없음(R14)을 확인한다.
+    //
+    // @MX:NOTE: reader park(R4) 관측 제약 — plan §B.5 는 bench/test 빌드에서
+    // 축소 워터마크 주입을 요구하나, M1 이 spawn_session 에 config 주입 경로를
+    // 제공하지 않았다(FlowState::with_config 는 standalone 인스턴스에만 사용 가능,
+    // spawned 세션은 Arc<PtySession> 배후라 config 필드 수정 불가). 또한 M1 의
+    // check_reader_park_gate 가 un_emitted 를 chunk 수(last_seq 차이)로 산출하여
+    // byte 단위 RING_PAUSE_THRESHOLD(768 KiB=786432)와 단위가 불일치해 기본
+    // config 에서 reader park 가 사실상 발생하지 않는다. 두 M1 갭 모두 본 M3
+    // 범위(PRESERVE) 밖이므로, bench 는 emitter 레벨(R3/R2/R1) 관측에 한정하며
+    // reader park/밸브(R4/R6)는 flow_tests.rs 단위 테스트로 검증된 상태로 둔다.
+    println!("[bench] flow-control soak (SPEC-PTY-FLOW-001 AC-11) ...");
+
+    // 기존 soak 명령이 실행 중인 팬을 재사용하면 Ctrl+C 로 중단이 불확실해
+    // (pwsh Start-Sleep 파이프라인이 간헐적으로 interrupt 를 삼킴), 전용 fresh
+    // 팬을 추가 spawn 하여 흐름 제어 관측의 간섭을 원천 차단한다.
+    let flow_pane = "bench-flow-pane";
+    registry
+        .spawn_session("bench-ws-0", flow_pane, &home, None)
+        .expect("spawn flow pane failed");
+    // 프롬프트 안정화 대기 + DSR 펌핑.
+    let flow_prompt_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < flow_prompt_deadline {
+        pump_dsr(&registry, flow_pane, dsr.entry(flow_pane.to_string()).or_insert(0));
+        let ready = registry
+            .session_for_pane(flow_pane)
+            .map(|s| s.ring.lock().unwrap().total_bytes > 20)
+            .unwrap_or(false);
+        if ready {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // live 모드 진입 — emitter 가 방출하도록 replay_synced=true 설정.
+    registry.set_active_workspace(Some("bench-ws-0"));
+    let _ = registry.replay(flow_pane, 0);
+    std::thread::sleep(Duration::from_millis(500));
+
+    // 빠른 홍수 — throughput 테스트와 동일 패턴(검증됨). outstanding 이
+    // HIGH(128 KiB)를 초과해 emitter 가 정지(R3)하게 만든다.
+    let _ = registry.write_pane(
+        flow_pane,
+        "$s='x'*8190; 1..20000 | ForEach-Object { $s }; 'TERMF_FLOW_DONE'\r",
+    );
+
+    // Phase A: ack 없음 → emitter 정지(R3) + outstanding 증가 관측.
+    let mut flow_samples: Vec<serde_json::Value> = Vec::new();
+    let mut saw_emitter_paused = false;
+    let phase_a_start = Instant::now();
+    let phase_a_deadline = phase_a_start + Duration::from_secs(10);
+    while Instant::now() < phase_a_deadline {
+        let _ = output::pump_once(&registry, &|_| {}, &|_| {});
+        pump_dsr(&registry, flow_pane, dsr.entry(flow_pane.to_string()).or_insert(0));
+        if let Some(s) = registry.flow_stats(flow_pane) {
+            if s.emitter_paused {
+                saw_emitter_paused = true;
+            }
+            flow_samples.push(serde_json::json!({
+                "phase": "A",
+                "t_ms": phase_a_start.elapsed().as_millis() as u64,
+                "emitted": s.emitted,
+                "acked": s.acked,
+                "outstanding": s.outstanding,
+                "emitter_paused": s.emitter_paused,
+                "reader_parked": s.reader_parked,
+            }));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let outstanding_at_end_a = registry
+        .session_for_pane(flow_pane)
+        .map(|s| s.flow_state.flow_stats().outstanding)
+        .unwrap_or(0);
+
+    // Phase B: ack 합성 → emitter 재개, outstanding drain, oldest-drop 없음 관측.
+    let ring_drop_before_b = registry
+        .session_for_pane(flow_pane)
+        .map(|s| {
+            let r = s.ring.lock().unwrap();
+            (r.dropped_chunks, r.dropped_bytes, r.total_bytes)
+        })
+        .unwrap_or((0, 0, 0));
+    // @MX:NOTE: LOW(32 KiB) 기준 — outstanding 을 LOW 근처로 drain 하는 ack 를
+    // 합성한다(emitter 재개 유도). 기본 config 의 LOW 워터마크 사용.
+    const FLOW_LOW_WATERMARK: usize = 32 * 1024;
+    let phase_b_start = Instant::now();
+    let phase_b_deadline = phase_b_start + Duration::from_secs(6);
+    while Instant::now() < phase_b_deadline {
+        let _ = output::pump_once(&registry, &|_| {}, &|_| {});
+        pump_dsr(&registry, flow_pane, dsr.entry(flow_pane.to_string()).or_insert(0));
+        // ack 합성: outstanding > LOW 면 그 차이만큼 ack → emitter 재개 → ring drain.
+        if let Some(s) = registry.flow_stats(flow_pane) {
+            if s.outstanding > FLOW_LOW_WATERMARK {
+                let ack = s.outstanding - FLOW_LOW_WATERMARK;
+                let _ = registry.ack_output(flow_pane, ack as u64);
+            }
+            flow_samples.push(serde_json::json!({
+                "phase": "B",
+                "t_ms": phase_b_start.elapsed().as_millis() as u64,
+                "emitted": s.emitted,
+                "acked": s.acked,
+                "outstanding": s.outstanding,
+                "emitter_paused": s.emitter_paused,
+                "reader_parked": s.reader_parked,
+            }));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let ring_drop_after_b = registry
+        .session_for_pane(flow_pane)
+        .map(|s| {
+            let r = s.ring.lock().unwrap();
+            (r.dropped_chunks, r.dropped_bytes, r.total_bytes)
+        })
+        .unwrap_or((0, 0, 0));
+    let oldest_drop_during_ack = ring_drop_after_b.0.saturating_sub(ring_drop_before_b.0);
+    // Phase B 중 outstanding 이 LOW 이하로 떨어진 적이 있는지(ack 가 emitter 를
+    // 재개시켰는지) 확인.
+    let saw_outstanding_drained_in_b = flow_samples
+        .iter()
+        .filter_map(|v| {
+            let phase = v.get("phase").and_then(|p| p.as_str())?;
+            let outstanding = v.get("outstanding")?.as_u64()?;
+            (phase == "B").then_some(outstanding)
+        })
+        .any(|o| o <= FLOW_LOW_WATERMARK as u64);
+
+    println!(
+        "[bench] flow soak done: emitterPausedInA:{saw_emitter_paused} outstandingEndA:{outstanding_at_end_a} outstandingDrainedInB:{saw_outstanding_drained_in_b} oldest_drop_during_ack:{oldest_drop_during_ack}"
+    );
+
+    // AC-11 판정: emitter 게이트(R3) 작동 + ack 합성(R2)으로 outstanding drain +
+    // ack 흐름 중 oldest-drop 없음. reader park(R4)는 위 M1 갭으로 본 bench 에서
+    // 관측 불가 — 단위 테스트(flow_tests.rs AC-3/4/5)로 검증됨.
+    let flow_ok = saw_emitter_paused
+        && saw_outstanding_drained_in_b
+        && oldest_drop_during_ack == 0;
+    report.insert("flow_saw_emitter_paused".into(), saw_emitter_paused.into());
+    report.insert("flow_outstanding_drained_in_b".into(), saw_outstanding_drained_in_b.into());
+    report.insert("flow_oldest_drop_during_ack".into(), oldest_drop_during_ack.into());
+    report.insert("flow_ok".into(), flow_ok.into());
+    report.insert("flow_samples".into(), flow_samples.into());
+
     // total dropped stats
     let (dropped_chunks, dropped_bytes): (u64, u64) = panes
         .iter()

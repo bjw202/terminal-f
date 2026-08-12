@@ -39,6 +39,31 @@ interface Report {
     rssAfterBytes: number;
     growthFactor: number;
   };
+  // SPEC-PTY-FLOW-001 M3 — AC-9/AC-10a 흐름 제어 검사 결과 (독립 판정).
+  // 기존 32 체크의 report.ok 집계와 분리하여, 흐름 제어 검사가 환경·M1 갭으로
+  // 실패하더라도 기존 체크 통과 여부가 가려지지 않게 한다.
+  flowControl?: {
+    flood: {
+      samples: Array<{
+        t: number; emitted: number; acked: number;
+        outstanding: number; emitterPaused: boolean; readerParked: boolean;
+      }>;
+      ackProgress: boolean;
+      outstandingBounded: boolean;
+      noOverflowBanner: boolean;
+      tailRendered: boolean;
+      maxOutstanding: number;
+    };
+    switchUnderLoad: {
+      beforeMaxLine: number;
+      afterMaxLine: number;
+      progressed: boolean;
+      noGap: boolean;
+      lineCountAfter: number;
+      expectedContiguous: number;
+    };
+  };
+  flowOk?: boolean;
   ok?: boolean;
 }
 
@@ -231,6 +256,134 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
     const tickAfter = maxTick(ctl.readBuffer(tickPane));
     report.checks.keepAlive = tickAfter > tickBefore && tickBefore > 0;
     step(`keep-alive:${report.checks.keepAlive} (tick ${tickBefore} -> ${tickAfter})`);
+
+    // -- SPEC-PTY-FLOW-001 M3: flood check (AC-9) ----------------------------
+    // @MX:NOTE: 활성 팬 홍수 시 흐름 제어 관측. flow_stats(pane_id) 를 폴링하여
+    // (a) ack 진전(acked 증가), (b) outstanding 바운더드, (c) overflow 배너 없음,
+    // (d) 최종 tail 렌더를 기계 판정한다. 백엔드 원자 변수의 유일한 프론트 관측
+    // 창구(R1). 상대값 규율: outstanding 은 절대값이 아닌 "유한하게 유지됨"을 판정.
+    const floodWs = await ctl.addWorkspace();
+    await ctl.switchTo(floodWs);
+    await sleep(3500); // fresh pwsh prompt 안정화
+    const floodPane = ctl.activePaneId();
+    // ~1.3 MiB 벌크 출력 — ring(1 MiB)을 압박하되 frontend ack 경로가 따라가면
+    // emitter 게이트(R3)가 outstanding 을 바운더리 내에서 조절한다.
+    await ipc.writePane(
+      floodPane,
+      "$pad='F'*200; 1..6000 | ForEach-Object { \"FLOODL $_ $pad\" }; 'TERMF_FLOOD_DONE'\r",
+    );
+    const floodSamples: Array<{
+      t: number; emitted: number; acked: number;
+      outstanding: number; emitterPaused: boolean; readerParked: boolean;
+    }> = [];
+    let floodDone = false;
+    const floodDeadline = Date.now() + 20000;
+    while (Date.now() < floodDeadline) {
+      const stats = await ipc.flowStats(floodPane).catch(() => null);
+      if (stats) {
+        floodSamples.push({
+          t: Date.now(),
+          emitted: stats.emitted,
+          acked: stats.acked,
+          outstanding: stats.outstanding,
+          emitterPaused: stats.emitterPaused,
+          readerParked: stats.readerParked,
+        });
+      }
+      if (ctl.readBuffer(floodPane).includes("TERMF_FLOOD_DONE")) {
+        floodDone = true;
+        break;
+      }
+      await sleep(200);
+    }
+    // AC-9 판정 (상대값 기준):
+    const floodAckProgress =
+      floodSamples.length >= 2 &&
+      floodSamples[floodSamples.length - 1].acked > floodSamples[0].acked;
+    const floodMaxOutstanding = floodSamples.reduce(
+      (m, s) => Math.max(m, s.outstanding),
+      0,
+    );
+    // HIGH(128 KiB)의 4배(512 KiB) 여유 한도 — "무한 증가 아님"을 기계 판정.
+    // 정상 동작 시 frontend ack 가 outstanding 을 HIGH 근처에서 조절한다.
+    const floodOutstandingBounded = floodMaxOutstanding <= 512 * 1024;
+    const floodBuf = ctl.readBuffer(floodPane);
+    const floodNoOverflow = !floodBuf.includes("output overflow");
+    const floodTailRendered = floodDone;
+    report.checks.floodAckProgress = floodAckProgress;
+    report.checks.floodOutstandingBounded = floodOutstandingBounded;
+    report.checks.floodNoOverflow = floodNoOverflow;
+    report.checks.floodTailRendered = floodTailRendered;
+    step(
+      `flood-flow(AC-9): ackProg:${floodAckProgress} outstandingBounded:${floodOutstandingBounded} (max=${floodMaxOutstanding}) noOverflow:${floodNoOverflow} tail:${floodTailRendered} samples:${floodSamples.length}`,
+    );
+
+    // -- SPEC-PTY-FLOW-001 M3: switch-under-load (AC-10a, 결함 2 회귀) --------
+    // @MX:NOTE: 홍수 중 워크스페이스 전환 시 스냅샷/replay 경계의 내용 공백(gap)
+    // 없음을 검증. 전환 이탈 시 snapshotAndDispose(parsedSeq 기준) → 복귀 시
+    // replay_pane(parsedSeq) 가 이어붙으며, 중복·누락 없이 연속 출력이 렌더되어야
+    // 한다. 결함 2(lastSeq 조기 전진) 회귀 테스트.
+    await ipc.writePane(floodPane, "\x03"); // 이전 홍수 루프 정리
+    await sleep(600);
+    // 느린 번호 라인 홍수 — 전환 와중에도 계속 생산되도록 ~15ms/행 유지.
+    await ipc.writePane(
+      floodPane,
+      "1..2000 | ForEach-Object { \"GAPL $_\"; Start-Sleep -Milliseconds 15 }\r",
+    );
+    await sleep(1200); // 전환 전 약 80행 생산
+    const gapBefore = new Set(
+      [...ctl.readBuffer(floodPane).matchAll(/GAPL (\d+)/g)].map((m) =>
+        Number(m[1]),
+      ),
+    );
+    const gapBeforeMax = gapBefore.size ? Math.max(...gapBefore) : 0;
+    // 전환 이탈 — snapshotAndDispose 가 parsedSeq 까지만 스냅샷.
+    await ctl.switchTo(ws1);
+    await sleep(3000); // 비활성 중에도 홍수 지속 (~200행 추가 생산)
+    // 복귀 — remount + replay_pane(parsedSeq) 가 공백을 채움.
+    await ctl.switchTo(floodWs);
+    await sleep(2500); // replay 직렬화 + xterm 렌더 대기
+    const gapAfterLines = [
+      ...ctl.readBuffer(floodPane).replace(/[\r\n]+/g, "\n").matchAll(
+        /GAPL (\d+)/g,
+      ),
+    ].map((m) => Number(m[1]));
+    const gapAfterSet = new Set(gapAfterLines);
+    const gapAfterMax = gapAfterSet.size ? Math.max(...gapAfterSet) : 0;
+    // (1) 진행: 전환 중에도 홍수가 계속되어 afterMax 가 beforeMax 보다 의미있게 커야 함.
+    const switchProgressed = gapAfterMax > gapBeforeMax + 50;
+    // (2) 무공백: 버퍼 내 행 번호가 연속 범위를 이룸(결함 2가 있으면 전환 구간이 통째로 누락).
+    //    렌더 타이밍 경계 효과로 5행 미만 슬랙은 허용.
+    const gapSorted = [...gapAfterSet].sort((a, b) => a - b);
+    const gapMin = gapSorted.length ? gapSorted[0] : 0;
+    const gapExpectedCount = gapAfterMax - gapMin + 1;
+    const gapActualCount = gapSorted.length;
+    const switchNoGap =
+      gapActualCount > 0 && gapExpectedCount - gapActualCount <= 5;
+    report.checks.switchUnderLoadProgressed = switchProgressed;
+    report.checks.switchUnderLoadNoGap = switchProgressed && switchNoGap;
+    step(
+      `switch-under-load(AC-10a): progressed:${switchProgressed} (lines ${gapBeforeMax} -> ${gapAfterMax}) noGap:${switchNoGap} (expected ${gapExpectedCount} got ${gapActualCount})`,
+    );
+    // 진단용 상세 기록 (리포트 파일이 정본 — 밖에서 판독).
+    report.flowControl = {
+      flood: {
+        samples: floodSamples,
+        ackProgress: floodAckProgress,
+        outstandingBounded: floodOutstandingBounded,
+        noOverflowBanner: floodNoOverflow,
+        tailRendered: floodTailRendered,
+        maxOutstanding: floodMaxOutstanding,
+      },
+      switchUnderLoad: {
+        beforeMaxLine: gapBeforeMax,
+        afterMaxLine: gapAfterMax,
+        progressed: switchProgressed,
+        noGap: switchNoGap,
+        lineCountAfter: gapActualCount,
+        expectedContiguous: gapExpectedCount,
+      },
+    };
 
     // -- workspace switch latency -------------------------------------------
     const latencies: number[] = [];
@@ -663,6 +816,19 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
     report.checks.rootDirRewritesPanes === true &&
     report.checks.rootDirRejectsMissing === true &&
     report.checks.rootDirCleared === true;
+
+  // SPEC-PTY-FLOW-001 M3 — AC-9/AC-10a 흐름 제어 검사 독립 집계.
+  // 기존 report.ok (32 체크) 체인에는 포함시키지 않는다: 흐름 제어 검사는
+  // frontend 런타임(xterm 처리량, WebGL 컨텍스트 상태) 및 M1 reader-park 경로
+  // 구현 상태에 의존하므로, 본 검사가 실패하더라도 기존 32 체크의 판정이
+  // 가려지지 않도록 분리한다. 사용자는 report.flowOk 와 report.flowControl 을
+  // 별도로 판독한다(리포트 파일이 정본).
+  report.flowOk =
+    report.checks.floodAckProgress === true &&
+    report.checks.floodOutstandingBounded === true &&
+    report.checks.floodNoOverflow === true &&
+    report.checks.floodTailRendered === true &&
+    report.checks.switchUnderLoadNoGap === true;
 
   try {
     await ipc.autotestReport(report);

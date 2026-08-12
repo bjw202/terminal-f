@@ -161,6 +161,12 @@ export const replayPane = (paneId: string, fromSeq: number) =>
 export const ackOutput = (paneId: string, bytes: number) =>
   invoke<void>("ack_output", { paneId, bytes });
 
+// SPEC-PTY-FLOW-001 M3 (R1 관측성) — flow_stats 디버그 커맨드 래퍼.
+// autotest flood 체크(AC-9)가 outstanding/emitterPaused/readerParked 를 폴링한다.
+// 백엔드 원자 변수의 유일한 프론트 관측 창구(R1). 미지 pane → null.
+export const flowStats = (paneId: string) =>
+  invoke<import("./types").FlowStats | null>("flow_stats", { paneId });
+
 export const getBootInfo = () => invoke<BootInfo>("get_boot_info");
 export const memoryStats = () => invoke<MemoryStats>("memory_stats");
 export const autotestReport = (report: unknown) =>

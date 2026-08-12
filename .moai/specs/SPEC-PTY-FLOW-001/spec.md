@@ -2,7 +2,7 @@
 id: SPEC-PTY-FLOW-001
 title: "PTY 출력 흐름 제어 (ack-watermark flow control) + 워크스페이스 전환 출력 유실 수정"
 version: "0.2.1"
-status: in-progress
+status: completed
 created: 2026-08-12
 updated: 2026-08-12
 author: manager-spec

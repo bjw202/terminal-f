@@ -2,7 +2,7 @@
 
 > 이 문서는 **다음 개발 세션(사람 또는 AI)이 이 코드베이스를 이어받아
 > 디버깅하거나 기능을 추가할 때** 필요한 모든 실무 지식을 담는다.
-> 아키텍처의 "왜"는 ADR-001~010, 기능 로드맵은 PLAN-M1-M2-roadmap.md 참고.
+> 아키텍처의 "왜"는 ADR-001~014, 기능 로드맵은 PLAN-M1-M2-roadmap.md 참고.
 > **새 기능을 완성하면 이 문서의 해당 절도 갱신할 것.**
 
 ---
@@ -43,8 +43,9 @@ rootDirRejectsMissing/rootDirCleared 포함). ADR-001~013.
 | `layout.rs` | pane 이진 트리 연산(split/close/resize/collect/`check_invariants`). 형제 승격, ratio clamp [0.1,0.9] |
 | `state.rs` | `AppState`(store/registry/config_path/injection_paused/automation), `WorkspaceStore`(CRUD, caps, trust), `resolve_inject_target`(라벨→pane, 중복 라벨 거부), `set_root_dir`(시작 폴더 설정/해제 + pane cwd 일괄 재작성, `set_color` 대칭 위치) |
 | `config.rs` | 디스크 로드/저장 + `migrate()`. **스키마 버전별 fixture 테스트가 여기 있음** |
-| `session.rs` | `SessionRegistry` + `PtySession`. reader 스레드, ring buffer 적재, spool 적재, idle 추적(`last_output_at`), bracketed-paste 모드 추적, `inject`(게이트 검사), `run_startup`(템플릿 시작 명령) |
-| `output.rs` | 16ms 배치 emitter(pty-output/pty-exit 이벤트), ring buffer(1MiB/1024청크, oldest-drop, seq 부여) |
+| `session.rs` | `SessionRegistry` + `PtySession`. reader 스레드, ring buffer 적재, spool 적재, idle 추적(`last_output_at`), bracketed-paste 모드 추적, `inject`(게이트 검사), `run_startup`(템플릿 시작 명령). **SPEC-PTY-FLOW-001**: reader park(R4), 정지 밸브(R6), 회계 리셋(R15), R8 teardown disarm |
+| `flow_state.rs` | **SPEC-PTY-FLOW-001**: 세션별 흐름 제어 상태 기계. ack 기반 워터마크(R3), reader park(R4/R5), 정지 밸브(R6), 회계 리셋(R15), flow_stats 관측 커맨드. `FlowState`/`FlowConfig` |
+| `output.rs` | 16ms 배치 emitter(pty-output/pty-exit 이벤트), ring buffer(1MiB/1024청크, oldest-drop, seq 부여). **SPEC-PTY-FLOW-001**: 워터마크 게이트(R3), R16 경합 방지(replay-pump 동일 ring 락), R1 emit 바이트 회계 |
 | `commands.rs` | 모든 `#[tauri::command]` + `do_inject` 공유 헬퍼 + `handle_pipe_method`(컨트롤 API 라우팅) + 자동화 폴링 진입점. `set_workspace_root`(파이프 경계에서 root_dir 제거), `pick_folder`(`rfd` 네이티브 폴더 대화상자, `#[tauri::command(async)]`) |
 | `automation.rs` | Rule/RuleSource(gitDiff·timer)/Proposal. **순수 로직**(`RuleRuntime::decide*`)과 부수효과 분리 → 단위테스트 용이 |
 | `audit.rs` | 주입 감사 로그(JSONL append/tail) |

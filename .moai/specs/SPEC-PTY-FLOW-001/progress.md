@@ -62,7 +62,25 @@ Gaps: 실기기 IME + Claude Code 스트리밍 홍수 수동 검증(§D.3 — �
 
 ## §E.4 Sync-phase Audit-Ready Signal
 
-_<pending sync-phase>_
+sync_status: audit-ready
+sync_complete_at: 2026-08-12
+sync_commit_sha: pending-backfill-placeholder
+
+Sync-phase artifacts delivered:
+- ADR-014 created (`docs/ADR-014-pty-flow-control.md`, 한국어) — 배경(결함 1, 결함 2) → 결정(ack-watermark, reader park, 정지 밸브, parsedSeq 이원화) → 워터마크 근거(seed 값 + bench/autotest 계측) → 트레이드오프(vs oldest-drop 단독, vs VS Code 문자 기반) → 테스트 구조(Rust 단위 테스트 + autotest flood/switch + bench soak) → R4 fix 비고
+- `docs/DEVELOPMENT.md` 갱신 — ADR-014 추가(ADR-001~014) + 백엔드 모듈 지도(flow_state.rs 추가, output.rs/session.rs 흐름 제어 반영)
+- `docs/ARCHITECTURE.md` 갱신 — §6 출력 흐름에 ack-watermark 게이트, reader park, 정지 밸브, parsedSeq 이원화, 회계 리셋 서술 추가
+- `CHANGELOG.md` 생성 — [Unreleased] 섹션에 SPEC-PTY-FLOW-001 엔트리 작성
+- README.md/GUIDE-features-easy.md 무변경 — §A.7 해당사항 없음(활성 팬 프리즈 → 자연 감속 등 변화는 사용자 가시 동작이나, README.md/GUIDE에 기술적 서술 필요 없음)
+- spec.md frontmatter `status: in-progress` → `status: completed` 전이 완료 (updated: 2026-08-12)
+- @MX 태그 검증 완료 — terms.ts(ANCHOR 1, NOTE 3, WARN 1), autotest.ts(NOTE 2), bench.rs(NOTE 3) 총 7개 태그 확인 (flow control 불변식/게이트/밸브/워터마크/상수)
+- AC-12(문서화) PASS: ADR-014 + 동반 문서 완료
+
+User-visible changes (§A.7 검토):
+- 활성 팬 홍수 시 프리즈 대신 자식 프로세스 자연 감속 → 사용자 가시 변화
+- 워크스페이스 전환 시 내용 공백 제거 → 사용자 가시 변화  
+- "[output overflow]" 배너가 정지 밸브 폴백 경로에서만 나타남 → 활성 팬 정상 경로에서 제거(사용자 가시 변화)
+
 
 ## §F Phase 4 Mode Selection
 

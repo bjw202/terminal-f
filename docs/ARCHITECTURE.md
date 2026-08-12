@@ -124,27 +124,30 @@ dispose) — 메모리 예산이 우선이다 (ADR-002). 두 정책은 절대 �
 절대 전달되지 않는다. (WebView2에서는 브라우저 예약 단축키와 충돌하지
 않는다.)
 
-## 6. 출력 흐름 (ADR-003, ADR-004)
+## 6. 출력 흐름 (ADR-003, ADR-004, ADR-014)
 
 ```
 ConPTY output
   → reader thread (8 KB reads, UTF-8 boundary repair)
   → bounded ring buffer (1 MiB / 1024 chunks per pane, oldest-drop, seq counter)
   → [active workspace only] emitter thread, 16 ms tick, one coalesced event per pane
+    → SPEC-PTY-FLOW-001 ack-watermark flow control:
+      - ack 기반 워터마크 게이트(R3): outstanding > HIGH(128KiB) 시 정지, ≤ LOW(32KiB) 시 재개
+      - reader park(R4): ring > RING_PAUSE_THRESHOLD(768KiB) 시 reader park → ConPTY 파이프 차오름 → 자식 write() 블로킹
+      - 정지 밸브(R6): 10s 무ack 시 폴백(oldest-drop + overflow 배너)
   → Tauri event "pty-output" { workspaceId, paneId, sessionId, seq, data }
-  → xterm.write(data)
+  → xterm.write(data) → parse callback → ack_output(paneId, parsed bytes)
 ```
 
-- 비활성 워크스페이스: **이벤트 없음**; 출력은 링 버퍼에 누적되고 전환 시
+- **SPEC-PTY-FLOW-001 흐름 제어**: 프론트엔드가 파싱 완료된 바이트를 `ack_output`으로 보고. 백엔드는 미확인(outstanding = emitted - acked) 바이트가 워터마크를 넘으면 방출을 멈춘고(활성 팬 프리즈 방지), ring이 임계치를 넘으면 reader가 park 하여 자식 write()를 블로킹한다. 죽은 프론트는 정지 밸브가 10s 후 폴백한다.
+- **비활성 워크스페이스**: **이벤트 없음**; 출력은 링 버퍼에 누적되고 전환 시
   리플레이된다 (`replay_pane(paneId, fromSeq)`).
-- 순서 보장: 세션별 단조 증가 `seq`. 프론트엔드는 마지막으로 기록한 seq를
-  추적하고, 리플레이는 그 지점부터 재개되며, 라이브 방출은 리플레이 종료
-  지점부터 재시작된다. 따라서 페인의 데이터는 스냅샷/리플레이/라이브 경계를
-  넘어 절대 중복되거나 순서가 뒤바뀌지 않는다.
-- 손실 정책: 링 버퍼가 넘치면 가장 오래된 청크를 버리고 개수를 센다.
+- **순서 보장**: 세션별 단조 증가 `seq`. 프론트엔드는 `receivedSeq`(수신 시점)와 `parsedSeq`(파싱 완료, **정본**)를 분리하여, `replay_pane(paneId, parsedSeq)`와 `snapshot.lastSeq`가 정본 seq를 사용한다(결함 2 수정). ack는 live emit 경로만 전진한다(R13 — replay 데이터는 ack하지 않음).
+- **손실 정책**: 링 버퍼가 넘치면 가장 오래된 청크를 버리고 개수를 센다.
   리플레이와 라이브 방출은 눈에 보이는 `[output overflow…]` 마커를 표시한다.
   원시 캡처는 크기가 제한되며 완전 무손실 아카이브가 **아니다** (파일 스풀은
   문서화된 M1+ 옵션이다, ADR-004).
+- **회계 리셋 3지점(R15)**: (i) `replay_synced=false` 전이(워크스페이스 이탈), (ii) `replay()` 재무장, (iii) 정지 밸브 발화 시 `acked := emitted`로 리셋 — 좌초 outstanding이 emitter 게이트를 영구 잠그는 것을 막는다.
 
 ## 7. 입력 흐름
 

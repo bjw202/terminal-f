@@ -45,19 +45,20 @@ Phase 1 Plan Audit Gate (re-run on v0.2.1, 2026-08-12): **PASS, 0.92** (Tier M t
 
 ## §E.3 Run-phase Audit-Ready Signal
 
-run_status: audit-ready (with documented Gap — autotest 행동 run 연기)
+run_status: audit-ready (모든 MUST AC 확정)
 run_complete_at: 2026-08-12
 run_commit_sha: 1c6c55d
+autotest_verified_at: 2026-08-12 (실기기, report `ok:true`)
 
 run-phase commits: `3c01b46`(M1 RED) → `9cc45c8`(M1 GREEN) → `5d26a52`(M2) → `0439cf7`(M3) → `1c6c55d`(R4 fix).
 
 AC status:
 - **MUST PASS** (단위/구조/bench): AC-1, AC-2, AC-3, AC-4, AC-5, AC-6, AC-7(`cargo test` 135 green), AC-10b, AC-10c, AC-14, AC-15 — 전부 PASS.
-- **MUST (행동 run 연기)**: AC-8(autotest 32체크), AC-9(flood), AC-10a(switch-under-load) — 구조 구현 완료 + tsc 통과. 행동 run 은 `TERMF_AUTOTEST=1` 함정(terminal-f 팬 안 실행 시 사용자 세션 Kill 위험)으로 **사용자가 별도 Windows Terminal에서 실행 필요**: `cd C:\project\terminal-f && set TERMF_AUTOTEST=1 && cargo tauri dev`, 종료 후 `autotest-report.json`의 `report.flowControl.*` 판독.
+- **MUST PASS** (실기기 autotest, 사용자 실행 2026-08-12): AC-8(기존 체크 + 신규 flow 체크 전부 green, `ok:true`), AC-9 flood(`ackProgress:true`, `maxOutstanding:32665` ≪ HIGH, `noOverflowBanner:true`, `tailRendered:true`), AC-10a switch-under-load(`progressed:true` 67→419행, `noGap:true` expected 419 = got 419 — 결함 2 회귀 확정 차단). 리포트: `src-tauri/autotest-report.json`. switch p95=85.3ms (<150).
 - **SHOULD**: AC-11(bench soak) PASS(`flow_ok=true`, reader_parked 관측 — R4 fix 후), AC-13(@MX) 부착.
 - **sync**: AC-12(ADR-014) — sync 단계 책임.
 
-Gaps: AC-8/9/10a 행동 run 연기(사용자 실행 전제). 실기기 IME 검증(§D.3). gap 1(FlowConfig 주입 경로) — 별개 개선.
+Gaps: 실기기 IME + Claude Code 스트리밍 홍수 수동 검증(§D.3 — 합성이벤트 한계). gap 1(FlowConfig 주입 경로) — 별개 개선. (flood 시 `emitterPaused/readerParked`는 실기기 처리량이 충분해 발동 안 함 — 정상; bench 극단 부하에서 발동 관측됨.)
 
 ## §E.4 Sync-phase Audit-Ready Signal
 

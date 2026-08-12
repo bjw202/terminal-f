@@ -137,6 +137,22 @@ fn ac_3_park_condition_false_after_disarm() {
     );
 }
 
+#[test]
+fn ac_3_reader_park_gate_uses_bytes_not_chunks() {
+    // 회귀 재현(R4 단위 불일치 버그): 청크 1개지만 RING_PAUSE_THRESHOLD 초과 **바이트** →
+    // 게이트 조건이 true 여야 한다. 과거 버그: check_reader_park_gate 가 청크 수(seq 차이,
+    // 최대 ~1024)를 써서 1 < 786432 → 항상 false — reader park 가 실제로 발동하지 않았음.
+    use crate::session::PtySession;
+    let session = Arc::new(PtySession::new_test("ws1", "pane1"));
+    session.replay_synced.store(true, Ordering::SeqCst);
+    let big = "x".repeat(RING_PAUSE_THRESHOLD + 1024);
+    session.ring.lock().unwrap().push(big); // 청크 1개, 바이트는 임계 초과
+    assert!(
+        session.reader_should_park_now(),
+        "R4 reader park 게이트는 미방출 **바이트** 기준이어야 한다 (청크 수 아님)"
+    );
+}
+
 // ==== AC-4: 정지 안전밸브 (R6) ====
 
 #[test]

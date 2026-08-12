@@ -112,6 +112,16 @@ impl RingBuffer {
         };
         (out, self.last_seq(), dropped)
     }
+
+    /// SPEC-PTY-FLOW-001 R4 — seq > from_seq 인 청크의 미방출 **바이트** 합.
+    /// `check_reader_park_gate` 가 바이트 단위 임계값(ring_pause_threshold)과 비교하기 위해 사용.
+    pub fn un_emitted_bytes(&self, from_seq: u64) -> usize {
+        self.entries
+            .iter()
+            .filter(|(seq, _)| *seq > from_seq)
+            .map(|(_, data)| data.len())
+            .sum()
+    }
 }
 
 pub struct PtySession {
@@ -908,19 +918,30 @@ impl SessionRegistry {
 }
 
 impl PtySession {
+    /// R4 park 조건(non-blocking) — 관측/테스트용. 미방출 **바이트** 기준(R4).
+    pub fn reader_should_park_now(&self) -> bool {
+        let last_emitted = self.last_emitted_seq.load(Ordering::SeqCst);
+        let un_emitted_bytes = {
+            let r = self.ring.lock().unwrap();
+            r.un_emitted_bytes(last_emitted)
+        };
+        let replay_synced = self.replay_synced.load(Ordering::SeqCst);
+        self.flow_state.should_reader_park(un_emitted_bytes, replay_synced)
+    }
+
     /// SPEC-PTY-FLOW-001 R4 — reader 게이트 진입점.
     /// ring 의 미방출 바이트(un-emitted)와 replay_synced 를 평가하여,
     /// 필요하면 `flow_state.check_park_and_wait` 로 condvar park 한다.
     /// 락 순서: ring 락 → flow_inner 락(잠깐) → release. registry 락은 잡지 않는다.
     pub fn check_reader_park_gate(&self) -> bool {
         let last_emitted = self.last_emitted_seq.load(Ordering::SeqCst);
-        let un_emitted = {
+        let un_emitted_bytes = {
             let r = self.ring.lock().unwrap();
-            r.last_seq().saturating_sub(last_emitted) as usize
+            r.un_emitted_bytes(last_emitted)
         };
         let replay_synced = self.replay_synced.load(Ordering::SeqCst);
         self.flow_state
-            .check_park_and_wait(un_emitted, replay_synced)
+            .check_park_and_wait(un_emitted_bytes, replay_synced)
     }
 }
 

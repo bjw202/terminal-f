@@ -31,7 +31,7 @@ Phase 1 Plan Audit Gate (re-run on v0.2.1, 2026-08-12): **PASS, 0.92** (Tier M t
 - tsc --noEmit: **exit 0** (에이전트 + 오키스트레이터 양쪽 독립 확인 — node `~/bin/node`).
 - AC-10b grep PASS: 핸들러(main.ts:809) receivedSeq만; parsedSeq는 writeParsed cb(terms.ts:252)·mountPane 설정만.
 - AC-10c grep PASS: ackOutput 유일 호출(terms.ts:313 flushAckNow); appendOutput(207-217)에 ack 호출 없음(R12).
-- @MX: terms.ts 6개(ANCHOR parsedSeq 불변식, WARN R15 await 의무, NOTE x4).
+- @MX: terms.ts 7개(ANCHOR 2 + WARN 1 + NOTE 4).
 - Gaps: autotest 동작 검증(AC-9/10a)·bench soak(AC-11)은 M3 소관. 실기기 IME는 §D.3 잔여위험.
 - Residual-risk: 전환 직전 ack invoke 백엔드 도달 순서는 Tauri 커맨드 큐 FIFO 가정에 의존(프로젝트 단일 스레드 순차 처리로 성립). 워터마크 seed는 개발기기 계측 기반.
 
@@ -71,9 +71,9 @@ Sync-phase artifacts delivered:
 - `docs/DEVELOPMENT.md` 갱신 — ADR-014 추가(ADR-001~014) + 백엔드 모듈 지도(flow_state.rs 추가, output.rs/session.rs 흐름 제어 반영)
 - `docs/ARCHITECTURE.md` 갱신 — §6 출력 흐름에 ack-watermark 게이트, reader park, 정지 밸브, parsedSeq 이원화, 회계 리셋 서술 추가
 - `CHANGELOG.md` 생성 — [Unreleased] 섹션에 SPEC-PTY-FLOW-001 엔트리 작성
-- README.md/GUIDE-features-easy.md 무변경 — §A.7 해당사항 없음(활성 팬 프리즈 → 자연 감속 등 변화는 사용자 가시 동작이나, README.md/GUIDE에 기술적 서술 필요 없음)
+- README.md/GUIDE-features-easy.md 무변경 — §A.7 사용자 가시 변화는 존재(아래 목록)하나, README 개요·GUIDE 기능 설명의 기존 서술과 충돌하지 않고 사용자 개입이 필요 없는 동작 개선이므로 별도 기술 서술은 불필요. 상세는 CHANGELOG §Changed + ADR-014에 기록.
 - spec.md frontmatter `status: in-progress` → `status: completed` 전이 완료 (updated: 2026-08-12)
-- @MX 태그 검증 완료 — terms.ts(ANCHOR 1, NOTE 3, WARN 1), autotest.ts(NOTE 2), bench.rs(NOTE 3) 총 7개 태그 확인 (flow control 불변식/게이트/밸브/워터마크/상수)
+- @MX 태그 검증 완료 — 총 **25개** (`flow_state.rs`=13[워터마크/reader-park/밸브·outstanding 불변식 ANCHOR·WARN 핵심], `terms.ts`=7, `autotest.ts`=2, `bench.rs`=3; session.rs/output.rs=0). (참고: 9b177ee 커밋 메시지의 "총 7개"는 `flow_state.rs` 누락 + 산술 오류 — 본 라인에서 정정.)
 - AC-12(문서화) PASS: ADR-014 + 동반 문서 완료
 
 User-visible changes (§A.7 검토):

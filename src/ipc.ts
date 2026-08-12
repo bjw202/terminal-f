@@ -155,6 +155,11 @@ export const resizePty = (paneId: string, rows: number, cols: number) =>
   invoke<void>("resize_pty", { paneId, rows, cols });
 export const replayPane = (paneId: string, fromSeq: number) =>
   invoke<ReplayResult>("replay_pane", { paneId, fromSeq });
+// SPEC-PTY-FLOW-001 M2 (R2/R9): 프론트가 xterm 파싱을 마친 바이트를 백엔드로 보고.
+// 백엔드는 미확인(outstanding) 바이트가 워터마크를 넘으면 방출을 멈춘다(R3).
+// 미지의 pane에 대한 ack는 백엔드가 조용히 무시한다(전환/teardown 경합 정상 경로).
+export const ackOutput = (paneId: string, bytes: number) =>
+  invoke<void>("ack_output", { paneId, bytes });
 
 export const getBootInfo = () => invoke<BootInfo>("get_boot_info");
 export const memoryStats = () => invoke<MemoryStats>("memory_stats");

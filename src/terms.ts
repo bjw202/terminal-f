@@ -11,7 +11,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import * as ipc from "./ipc";
 import { currentTheme } from "./themes";
-import type { PaneId } from "./types";
+import type { PaneId, PtyOutputEvent } from "./types";
 
 let fontSize = 14;
 
@@ -39,6 +39,13 @@ let fontSize = 14;
 const OUTPUT_WATCHDOG_MS = 1000;
 const OUTPUT_BUFFER_CAP = 256 * 1024;
 const ECHO_PASS_MS = 120;
+// @MX:NOTE: [AUTO] SPEC-PTY-FLOW-001 흐름제어 상수 (spec §B 명명 상수 — 매직 넘버 금지).
+// ACK_BATCH_BYTES: write 콜백에서 누적 ack가 이 임계치를 넘으면 즉시 플러시(R9 배치).
+// ACK_FLUSH_IDLE_MS: 잔여 ack가 이 시간 동안 더해지지 않으면 타이머 플러시(초당 ~20회 상한).
+// SNAPSHOT_DRAIN_TIMEOUT_MS: snapshotAndDispose 가 미완료 write 콜백을 대기하는 한도(R11).
+const ACK_BATCH_BYTES = 4 * 1024;
+const ACK_FLUSH_IDLE_MS = 50;
+const SNAPSHOT_DRAIN_TIMEOUT_MS = 500;
 
 // Copy-on-select: when on, completing a selection copies it to the clipboard
 // automatically (opt-in, persisted in uiPrefs; default off). Mirrors the
@@ -113,18 +120,42 @@ export interface PaneView {
   headerLabels: HTMLElement;
   headerInject: HTMLElement;
   headerObserve: HTMLElement;
-  lastSeq: number;
+  // @MX:ANCHOR: [AUTO] parsedSeq — xterm write 콜백에서만 전진하는 정본 seq(R10).
+  // @MX:REASON: replay_pane(paneId, parsedSeq) 와 snapshot.lastSeq 가 모두 이 값을 읽는다
+  //   (fan_in >= 3: mountPane/replay, snapshotAndDispose, pty-output 간접). 수신 즉시
+  //   전진하던 구 구조(결함 2)와 반대 — 파싱 완료 시점에만 움직인다. receivedSeq 는
+  //   진단용(이벤트 수신 시점). IME 보류중 데이터는 여기에 아직 반영되지 않는다(R12).
+  parsedSeq: number;
+  /** 진단용: pty-output 이벤트 수신 시점에 전진. 정본 parsedSeq 와 분리(R10). */
+  receivedSeq: number;
   resizeObserver: ResizeObserver;
   exitShown: boolean;
   /** IME output-buffering state (see writeOutput and OUTPUT_WATCHDOG_MS).
    * `imeBuffering` gates whether output is held; `outBuf`/`outBufLen` accumulate
    * the held chunks; `outWatchdog` is the force-flush timer; `lastInputTs`
-   * timestamps the last onData -> PTY write for the echo pass-through window. */
+   * timestamps the last onData -> PTY write for the echo pass-through window.
+   * `heldMaxSeq`/`heldAckBytes` track the max seq + ack-eligible bytes across
+   * the held chunks so the flush write-cb can advance parsedSeq + ack exactly
+   * (R10/R12 — 보류중 데이터는 term.write 도달 전이므로 미ack). */
   imeBuffering: boolean;
   outBuf: string[];
   outBufLen: number;
   outWatchdog: ReturnType<typeof setTimeout> | null;
   lastInputTs: number;
+  heldMaxSeq: number | undefined;
+  heldAckBytes: number;
+  // @MX:NOTE: [AUTO] ack 배치 상태(R9). write 콜백에서 ackPendingBytes 누적 →
+  //   ACK_BATCH_BYTES 도달 즉시 플러시, 또는 ACK_FLUSH_IDLE_MS idle 후 플러시.
+  //   ackInFlight 는 R15 late-ack (전환 전 잔여 ack invoke 완료 대기) 를 지원.
+  ackPendingBytes: number;
+  ackIdleTimer: ReturnType<typeof setTimeout> | null;
+  ackInFlight: Set<Promise<void>>;
+  /** 미완료 term.write 콜백 추적 — snapshotAndDispose 드레인(R11)이 대기하는 집합. */
+  pendingDrain: Set<Promise<void>>;
+  /** replay_pane invoke 진행중 플래그 — 이 팬으로 향하는 live 이벤트를 버퍼링(R10 N2). */
+  replayInFlight: boolean;
+  /** replay 진행중 도착한 live pty-output 이벤트의 지연 버퍼(R10 N2). */
+  pendingReplayEvents: PtyOutputEvent[];
 }
 
 export interface VisualSnapshot {
@@ -152,31 +183,44 @@ export function allViews(): PaneView[] {
  * just-committed syllable — holding it stalls the cursor and stacks the IME
  * preview over committed text). Otherwise it writes straight through.
  * Order invariant: a pass-through write always flushes the held buffer first,
- * so chunks never overtake earlier held output. */
-export function writeOutput(paneId: PaneId, data: string): void {
+ * so chunks never overtake earlier held output.
+ *
+ * SPEC-PTY-FLOW-001 M2: `seq` 식별 가능한 PTY 배치 이벤트일 때만 전달한다. seq 가
+ * 없으면 합성 배너(exit/overflow 메시지)이므로 ack 도 parsedSeq 전진도 하지 않는다.
+ * ack 는 오직 term.write 콜백(파싱 완료)에서 발생한다(R9/R12). */
+export function writeOutput(paneId: PaneId, data: string, seq?: number): void {
   const view = views.get(paneId);
   if (!view) return; // pane not mounted; ring buffer replay covers it later
   if (view.imeBuffering && Date.now() - view.lastInputTs > ECHO_PASS_MS) {
-    appendOutput(view, data);
+    appendOutput(view, data, seq);
     return;
   }
   flushOutput(view); // no-op unless an echo chunk is overtaking held output
-  view.term.write(data);
+  // ackBytes: seq 가 있는 배치(실 PTY 출력)만 data.length 만큼 ack 누적.
+  writeParsed(view, data, seq, seq !== undefined ? data.length : 0);
 }
 
 /** Hold a chunk in the view's IME buffer; arm the watchdog on the first chunk
- * and force-flush (keeping buffering armed) if the held size passes the cap. */
-function appendOutput(view: PaneView, data: string): void {
+ * and force-flush (keeping buffering armed) if the held size passes the cap.
+ * seq-식별 가능한 청크는 heldMaxSeq/heldAckBytes 에도 반영하여 flush 시 정확한
+ * parsedSeq 전진 + ack 를 보장한다(R12 — 보류중 데이터는 아직 term.write 도달 전). */
+function appendOutput(view: PaneView, data: string, seq?: number): void {
   const wasEmpty = view.outBuf.length === 0;
   view.outBuf.push(data);
   view.outBufLen += data.length;
+  if (seq !== undefined) {
+    view.heldAckBytes += data.length;
+    if (view.heldMaxSeq === undefined || seq > view.heldMaxSeq) view.heldMaxSeq = seq;
+  }
   if (wasEmpty) startOutputWatchdog(view);
   if (view.outBufLen > OUTPUT_BUFFER_CAP) flushOutput(view); // runaway guard
 }
 
 /** Write the held buffer to the terminal in one shot and clear it + the
  * watchdog. Leaves `imeBuffering` untouched — the caller decides whether to
- * keep buffering (size-cap flush) or stop (compositionend / blur / watchdog). */
+ * keep buffering (size-cap flush) or stop (compositionend / blur / watchdog).
+ * 누적된 heldMaxSeq/heldAckBytes 로 writeParsed 를 호출 → 콜백에서 parsedSeq 전진
+ * 및 ack 누적(R9/R10). */
 function flushOutput(view: PaneView): void {
   if (view.outWatchdog !== null) {
     clearTimeout(view.outWatchdog);
@@ -184,9 +228,94 @@ function flushOutput(view: PaneView): void {
   }
   if (view.outBuf.length === 0) return;
   const data = view.outBuf.join("");
+  const seq = view.heldMaxSeq;
+  const ackBytes = view.heldAckBytes;
   view.outBuf = [];
   view.outBufLen = 0;
-  view.term.write(data);
+  view.heldMaxSeq = undefined;
+  view.heldAckBytes = 0;
+  writeParsed(view, data, seq, ackBytes);
+}
+
+/** term.write(data, cb) 래퍼 — xterm 파싱 완료 시점에 단일 진실 소스를 갱신:
+ *  - parsedSeq: cb 안에서만 전진(R10 정본). seq undefined 면 건드리지 않는다.
+ *  - ack: ackBytes>0 일 때 ackPendingBytes 누적 → 배치 플러시 예약(R9).
+ *  pendingDrain 에 promise 를 적재하여 snapshotAndDispose 드레인이 대기(R11). */
+function writeParsed(
+  view: PaneView,
+  data: string,
+  seq: number | undefined,
+  ackBytes: number,
+): Promise<void> {
+  const p = new Promise<void>((resolve) => {
+    view.term.write(data, () => {
+      if (seq !== undefined && seq > view.parsedSeq) view.parsedSeq = seq;
+      if (ackBytes > 0) {
+        view.ackPendingBytes += ackBytes;
+        scheduleAckFlush(view);
+      }
+      resolve();
+    });
+  });
+  view.pendingDrain.add(p);
+  p.then(
+    () => {
+      view.pendingDrain.delete(p);
+    },
+    () => {
+      view.pendingDrain.delete(p);
+    },
+  );
+  return p;
+}
+
+/** 비-PTY 기원 데이터(스냅샷 복원 / replay 응답 / 합성 배너) 기록 — ack 없이
+ *  parsedSeq 만 전진(R13: replay 바이트 미ack; R10: parsedSeq는 파싱 완료 시 전진).
+ *  main.ts mountPane 가 스냅샷 복원·replay 데이터 기록에 사용한다. */
+export function writeParsedNoAck(
+  paneId: PaneId,
+  data: string,
+  seq?: number,
+): Promise<void> {
+  const view = views.get(paneId);
+  if (!view) return Promise.resolve();
+  return writeParsed(view, data, seq, 0);
+}
+
+/** 누적 ack 가 배치 임계치를 넘으면 즉시 플러시; 아니면 idle 타이머로 잔여분을
+ *  나중에 플러시(R9 배치 — 작은 write 마다 IPC 1회 금지). */
+function scheduleAckFlush(view: PaneView): void {
+  if (view.ackPendingBytes >= ACK_BATCH_BYTES) {
+    void flushAckNow(view);
+    return;
+  }
+  if (view.ackIdleTimer === null) {
+    view.ackIdleTimer = setTimeout(() => {
+      void flushAckNow(view);
+    }, ACK_FLUSH_IDLE_MS);
+  }
+}
+
+/** 누적 ack 를 ack_output 으로 플러시한다. idle 타이머 해제 후 남은분을 보내고,
+ *  진행중 invoke 를 ackInFlight 에 추적하여 R15 late-ack 경로(dispose 전 await)가
+ *  백엔드 도착 순서를 "마지막 ack → 리셋" 으로 고정하도록 한다. */
+function flushAckNow(view: PaneView): Promise<void> {
+  if (view.ackIdleTimer !== null) {
+    clearTimeout(view.ackIdleTimer);
+    view.ackIdleTimer = null;
+  }
+  if (view.ackPendingBytes <= 0) {
+    // 새로 보낼 분량은 없지만 진행중 invoke 가 남아있으면 그것이라도 정착 대기.
+    return Promise.allSettled([...view.ackInFlight]).then(() => undefined);
+  }
+  const bytes = view.ackPendingBytes;
+  view.ackPendingBytes = 0;
+  const p = ipc.ackOutput(view.paneId, bytes).catch((e) => console.warn("[ack]", e));
+  view.ackInFlight.add(p);
+  p.finally(() => {
+    view.ackInFlight.delete(p);
+  });
+  return p;
 }
 
 /** Force-flush after OUTPUT_WATCHDOG_MS so a composition left open (no
@@ -373,7 +502,8 @@ export function getOrCreateView(paneId: PaneId, opts: CreateOpts): PaneView {
     headerLabels,
     headerInject,
     headerObserve,
-    lastSeq: 0,
+    parsedSeq: 0,
+    receivedSeq: 0,
     resizeObserver: new ResizeObserver(() => syncSize(view)),
     exitShown: false,
     imeBuffering: false,
@@ -381,6 +511,14 @@ export function getOrCreateView(paneId: PaneId, opts: CreateOpts): PaneView {
     outBufLen: 0,
     outWatchdog: null,
     lastInputTs: 0,
+    heldMaxSeq: undefined,
+    heldAckBytes: 0,
+    ackPendingBytes: 0,
+    ackIdleTimer: null,
+    ackInFlight: new Set(),
+    pendingDrain: new Set(),
+    replayInFlight: false,
+    pendingReplayEvents: [],
   };
 
   term.open(body);
@@ -637,22 +775,43 @@ export function syncSize(view: PaneView): void {
 }
 
 /** Serialize the visual state and fully dispose the xterm instance
- * (unmount policy for inactive workspaces, ADR-002). */
-export function snapshotAndDispose(paneId: PaneId): void {
+ * (unmount policy for inactive workspaces, ADR-002).
+ *
+ * SPEC-PTY-FLOW-001 M2 (R11/R15): async. ① IME 보류 버퍼 플러시 → ② 미완료 write
+ * 콜백을 SNAPSHOT_DRAIN_TIMEOUT_MS 한도로 대기(드레인) → ③ 잔여 ack 배치 플러시+대기 →
+ * ④ serialize. 타임아웃 시에도 정확성 유지 — parsedSeq 는 파싱된 범위만 가리키므로
+ * remount 후 replay_pane(parsedSeq) 가 공백을 채운다(R11 핵심 역전). ③ 은 R15 late-ack:
+ * 전환 리셋 전에 마지막 ack 가 백엔드에 도착하도록 invoke 완료를 await 한다. */
+export async function snapshotAndDispose(paneId: PaneId): Promise<void> {
   const view = views.get(paneId);
   if (!view) return;
   // Flush any IME-held output into the terminal so it lands in the snapshot;
   // otherwise buffered chunks would be lost on unmount.
   view.imeBuffering = false;
   flushOutput(view);
+  // @MX:NOTE: [AUTO] 드레인 — 미완료 write 콜백 대기(R11). 직렬화 전 파싱 상태를
+  //   확정하여 스냅샷이 파싱 완료분까지 포함하도록 한다.
+  const drain = Promise.all([...view.pendingDrain]).then(
+    () => undefined,
+    () => undefined,
+  );
+  await Promise.race([
+    drain,
+    new Promise<void>((r) => setTimeout(r, SNAPSHOT_DRAIN_TIMEOUT_MS)),
+  ]);
+  // @MX:WARN: [AUTO] R15 late-ack — serialize 전 잔여 ack invoke 를 반드시 await.
+  // @MX:REASON: await 없으면 전환 리셋(replay_synced=false)보다 늦게 도착한 옛 ack 가
+  //   acked_bytes 를 영구 부풀려 outstanding 왜곡 → emitter 게이트 영향. "마지막 ack →
+  //   리셋" 도착 순서를 고정하는 유일한 수단이다.
+  await flushAckNow(view);
   try {
     snapshots.set(paneId, {
       data: view.serialize.serialize({ scrollback: 1000 }),
-      lastSeq: view.lastSeq,
+      lastSeq: view.parsedSeq,
     });
   } catch (e) {
     console.warn("[terminal-f] serialize failed", e);
-    snapshots.set(paneId, { data: "", lastSeq: view.lastSeq });
+    snapshots.set(paneId, { data: "", lastSeq: view.parsedSeq });
   }
   disposeView(paneId);
 }
@@ -661,8 +820,13 @@ export function disposeView(paneId: PaneId): void {
   const view = views.get(paneId);
   if (!view) return;
   if (view.outWatchdog !== null) clearTimeout(view.outWatchdog); // stop the IME flush timer
+  if (view.ackIdleTimer !== null) clearTimeout(view.ackIdleTimer); // stop the ack idle flush
   view.outBuf = []; // discard any held output; the terminal is going away
   view.outBufLen = 0;
+  view.heldMaxSeq = undefined;
+  view.heldAckBytes = 0;
+  view.ackPendingBytes = 0;
+  view.pendingReplayEvents = []; // discard buffered events; pane is gone (R10)
   view.resizeObserver.disconnect();
   view.term.dispose();
   view.el.remove();

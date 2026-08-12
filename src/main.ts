@@ -290,27 +290,52 @@ function updateFocusStyles(): void {
 async function mountPane(paneId: PaneId): Promise<void> {
   const view = terms.getView(paneId);
   if (!view) return;
+  // SPEC-PTY-FLOW-001 M2 (R10): replayInFlight 를 가장 먼저 세워 live pty-output 이벤트를
+  // 버퍼링한다 — 스냅샷 복원·replay 데이터 적용 "이후에" 순서대로 붙인다(R10 N2).
+  view.replayInFlight = true;
+  // 5. restore visual snapshot (정본 parsedSeq 기준)
   const snap = terms.snapshots.get(paneId);
-  if (snap?.data) view.term.write(snap.data); // 5. restore visual snapshot
-  view.lastSeq = snap?.lastSeq ?? 0;
+  if (snap) {
+    view.parsedSeq = snap.lastSeq; // 스냅샷은 parsedSeq 까지 파싱된 상태
+    if (snap.data) terms.writeParsedNoAck(paneId, snap.data); // 시각 복원 — ack 없음
+  } else {
+    view.parsedSeq = 0;
+  }
   terms.snapshots.delete(paneId);
   try {
     // 6. replay pending backend output accumulated while unmounted
-    const replay = await ipc.replayPane(paneId, view.lastSeq);
+    const replay = await ipc.replayPane(paneId, view.parsedSeq);
     if (replay.dropped) {
-      view.term.write(
+      terms.writeParsedNoAck(
+        paneId,
         "\r\n\x1b[33m[terminal-f: output overflow while inactive, oldest chunks dropped]\x1b[0m\r\n",
       );
     }
-    if (replay.data) view.term.write(replay.data);
-    view.lastSeq = replay.lastSeq;
+    if (replay.data) {
+      // R13: replay 바이트는 ack 않함(byte 회계는 live-emit 전용). parsedSeq는 파싱
+      // 완료 시 전진 → writeParsedNoAck 콜백이 replay.lastSeq 로 갱신. await 로 cb 확정.
+      await terms.writeParsedNoAck(paneId, replay.data, replay.lastSeq);
+    } else if (replay.lastSeq > view.parsedSeq) {
+      // replay 데이터는 없으나 백엔드 lastSeq 가 앞서면 동기화(공백 없음 보증).
+      view.parsedSeq = replay.lastSeq;
+    }
     if (replay.state === "exited" && !view.exitShown) {
       view.exitShown = true;
-      view.term.write("\r\n\x1b[31m[process exited]\x1b[0m\r\n");
+      terms.writeParsedNoAck(paneId, "\r\n\x1b[31m[process exited]\x1b[0m\r\n");
     }
   } catch (e) {
     // Pane without a session (e.g. PTY cap reached): show why.
-    view.term.write(`\r\n\x1b[31m[no session: ${String(e)}]\x1b[0m\r\n`);
+    terms.writeParsedNoAck(paneId, `\r\n\x1b[31m[no session: ${String(e)}]\x1b[0m\r\n`);
+  } finally {
+    view.replayInFlight = false;
+    // replay 중 버퍼링된 live 이벤트를 순서대로 적용. replay 가 이미 포함한 범위
+    // (ev.seq <= parsedSeq)는 중복이므로 스킵(R10 N2 — 중복 재방출 방지).
+    const pending = view.pendingReplayEvents.splice(0);
+    for (const ev of pending) {
+      if (ev.seq <= view.parsedSeq) continue;
+      view.receivedSeq = ev.seq;
+      terms.writeOutput(paneId, ev.data, ev.seq);
+    }
   }
 }
 
@@ -371,9 +396,12 @@ async function switchTo(workspaceId: string): Promise<number> {
   const t0 = performance.now();
   zoomedPaneId = null;
   if (current) {
-    for (const leaf of collectLeaves(current.root)) {
-      terms.snapshotAndDispose(leaf.id);
-    }
+    // SPEC-PTY-FLOW-001 M2: snapshotAndDispose is async (R11 드레인 + R15 late-ack
+    // 플러시). 모든 leaf 의 dispose-직전 ack invoke 가 정착한 뒤 switchWorkspace 가
+    // 백엔드 회계를 리셋하도록 병렬 await 한다(도착 순서 "마지막 ack → 리셋").
+    await Promise.all(
+      collectLeaves(current.root).map((leaf) => terms.snapshotAndDispose(leaf.id)),
+    );
   }
   const res = await ipc.switchWorkspace(workspaceId);
   current = res.workspace;
@@ -777,9 +805,13 @@ registerCommandProvider(() => templateCommands);
 void ipc.onPtyOutput((ev) => {
   // Output path: backend ring buffer -> batched event -> xterm.write.
   const view = terms.getView(ev.paneId);
-  if (!view) return; // pane not mounted; ring buffer replay covers it later
-  terms.writeOutput(ev.paneId, ev.data); // routes through the IME output buffer
-  view.lastSeq = ev.seq;
+  if (!view) return; // disposed/unmounted pane — discard (R10): 파싱도 ack 도 않함
+  view.receivedSeq = ev.seq; // 진단용 — 정본 parsedSeq 는 write 콜백에서만 전진(R10)
+  if (view.replayInFlight) {
+    view.pendingReplayEvents.push(ev); // replay 진행중 — 버퍼링, 이후 순서 적용(R10 N2)
+    return;
+  }
+  terms.writeOutput(ev.paneId, ev.data, ev.seq); // ack 는 write 콜백에서(R9/R12)
 });
 
 void ipc.onPtyExit((ev) => {

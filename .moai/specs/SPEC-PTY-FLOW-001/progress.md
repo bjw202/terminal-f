@@ -64,7 +64,7 @@ Gaps: 실기기 IME + Claude Code 스트리밍 홍수 수동 검증(§D.3 — �
 
 sync_status: audit-ready
 sync_complete_at: 2026-08-12
-sync_commit_sha: pending-backfill-placeholder
+sync_commit_sha: 9b177eeb7d1b0e55fca4b63c128fec171b30def1
 
 Sync-phase artifacts delivered:
 - ADR-014 created (`docs/ADR-014-pty-flow-control.md`, 한국어) — 배경(결함 1, 결함 2) → 결정(ack-watermark, reader park, 정지 밸브, parsedSeq 이원화) → 워터마크 근거(seed 값 + bench/autotest 계측) → 트레이드오프(vs oldest-drop 단독, vs VS Code 문자 기반) → 테스트 구조(Rust 단위 테스트 + autotest flood/switch + bench soak) → R4 fix 비고

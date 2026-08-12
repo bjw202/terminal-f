@@ -13,6 +13,11 @@ pub mod spool;
 pub mod state;
 pub mod template;
 
+// SPEC-PTY-FLOW-001 M1 — 흐름 제어 단위 테스트. 본 모듈 선언은 cargo test에서만
+// 활성화되며, GREEN 구현(crate::flow_state)이 없는 RED 단계에서는 컴파일 실패해야 한다.
+#[cfg(test)]
+mod flow_tests;
+
 use state::{AppState, WorkspaceStore};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

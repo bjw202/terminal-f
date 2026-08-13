@@ -26,13 +26,72 @@ npm install
 npm run tauri dev        # 개발용 앱 실행 (vite + cargo)
 ```
 
-## 설치 파일 만들기
+## 설치 파일 만들기 (릴리즈 빌드)
+
+배포용 설치 파일을 만들려면 아래 한 줄이면 충분합니다. Tauri가 알아서
+프론트엔드 번들(`npm run build`)과 Rust release 컴파일까지 순서대로
+실행합니다.
 
 ```powershell
-npm run build            # 프론트엔드 타입검사 + 번들
-cd src-tauri; cargo build           # 백엔드 디버그 빌드
-npx tauri build          # 배포용 설치 파일(NSIS) 생성
+npx tauri build          # 프론트엔드 번들 + Rust release 빌드 + NSIS 설치 파일 생성
 ```
+
+> 단계를 나눠 실행할 수도 있지만, 보통은 위 한 줄로 충분합니다:
+```powershell
+npm run build            # 프론트엔드 타입검사 + 번들만
+cd src-tauri; cargo build           # 백엔드(Rust) 빌드만 (debug)
+```
+
+결과물:
+- `src-tauri\target\release\terminal-f.exe` — 실행 파일
+- `src-tauri\target\release\bundle\nsis\terminal-f_*_x64-setup.exe` — 배포용 설치 파일
+
+## 아이콘 수정 및 업데이트 문제
+
+### 아이콘 다시 만들기
+
+아이콘의 원본은 `src-tauri/icons/icon.png`(512×512) 하나입니다. 모든
+크기(`.ico`, `.icns`, PNG 변형, iOS/Android)는 이 원본에서 자동으로
+파생됩니다. 그래서 원본 하나를 고친 뒤 아래 명령으로 전체 크기를 다시
+만듭니다.
+
+```powershell
+npx tauri icon src-tauri/icons/icon.png
+```
+
+### 모서리가 흰색으로 나오는 문제 (투명 배경)
+
+이미지 생성 모델(imagegen 등)은 투명 배경(alpha channel)을 직접 만들지
+못해 배경이 흰색으로 채워집니다. 이걸 그대로 아이콘으로 쓰면 모서리가
+흰색이 됩니다. 원본 PNG를 만든 뒤 배경을 투명하게 후처리(rembg, 이미지
+에디터의 '투명하게 지우기' 등)해야 합니다.
+
+### 아이콘을 바꿨는데 예전 아이콘이 계속 보일 때 (캐시)
+
+세 군데 캐시를 모두 끊어야 새 아이콘이 보입니다.
+
+1. **Windows 아이콘 캐시** (가장 흔한 원인):
+   ```powershell
+   taskkill /f /im explorer.exe
+   del /a /q "$env:localappdata\IconCache.db"
+   del /a /f /q "$env:localappdata\Microsoft\Windows\Explorer\iconcache_*.db"
+   start explorer.exe
+   ```
+
+2. **이전 설치 잔재** — 설정 → 앱에서 terminal-f 이전 버전을 완전히
+   제거한 뒤 새 설치 파일로 다시 설치합니다.
+
+3. **Rust 빌드 캐시** — 빌드해도 예전 아이콘이 나올 때:
+   ```powershell
+   cd src-tauri
+   Remove-Item -Recurse -Force target\release\bundle   # 번들 캐시만
+   # 또는 cargo clean                                   # 전체 정리(느림)
+   ```
+
+> 참고: `cargo build`(debug)와 `npx tauri build`(release)는 서로 다른
+> 아이콘 캐시 경로를 씁니다. debug로 띄운 뒤 release로 빌드하면
+> 작업표시줄에 debug 아이콘이 남아 헷갈릴 수 있으니, 최종 확인은 항상
+> release 빌드 + 새로 설치로 하세요.
 
 ## 테스트 돌리기
 

@@ -224,7 +224,7 @@ _run-phase 완료 — M1(단위 통일) + M2(안전밸브 + 종단 가드) 전 �
 
 ```yaml
 sync_complete_at: 2026-08-19
-sync_commit_sha: pending-backfill-spec-pty-flow-002
+sync_commit_sha: 040d7f5
 sync_status: completed
 ac15_status: PASS
 ac15_evidence: "ADR-014 v1.1.0 개정(회계 단위 명시 + emitter 밸브 + 잔여 누수 기명) + ARCHITECTURE.md §6 갱신(회계 단위·emitter 밸브) + DEVELOPMENT.md 모듈 지도 갱신(flow002_* 테스트·u8Flood 체크·TERMF_FLOW_STALL_TIMEOUT_MS·bench emitter_valve_fired) + CHANGELOG.md [Unreleased] Fixed 엔트리 — 파일 diff로 검증"

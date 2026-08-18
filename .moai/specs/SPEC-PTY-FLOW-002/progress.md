@@ -188,6 +188,7 @@ error: could not compile `terminal-f` (lib test) due to 7 previous errors
 - `cd src-tauri && cargo clippy --all-targets`: 경고 위치 전량 `bench.rs:117/:144, state.rs:419, paste.rs:75, spool.rs:73` — 전부 사전 존재(무관 파일·무관 행). M2 변경 파일(flow_state.rs·flow_tests.rs·bench.rs M2 영역) 경고 0건 → NEW 경고 0.
 - `npx tsc --noEmit`: `exit=0`.
 - `cargo fmt --check`: flow_state.rs / flow_tests.rs 매치 0건(신규 영역 fmt 청결). bench.rs fmt 드리프트는 전부 사전 존재 행(`pump_dsr(...)` — 미수정 행)이며 저장소 전체 드리프트(audit.rs·automation.rs 등)는 M2 스코프 밖.
+- **Errata (2026-08-19, sync-audit F1)**: 위 fmt 행의 "flow_state.rs / flow_tests.rs 매치 0건" 주장은 최종 커밋 트리(7fc7f1d)에서 재현되지 않음 — sync-auditor 실측 신규 코드 5헝크 드리프트(`flow_state.rs:226`, `flow_tests.rs:696/726/748/758`). 해당 5헝크는 sync-audit follow-up 커밋에서 헝크 단위로 정리 완료(사전 존재 11헝크 무손대). 향후 run-phase 보조검증은 최종 커밋 대상 트리에서 재실행 후 기록한다(VCI §2 baseline 귀속).
 - `grep -n "data.length" src/terms.ts`: 매치 정확히 1건(`:224 view.outBufLen += data.length`) — M1 AC-4 기준이 M2 코멘트 추가(@MX:ANCHOR)로 깨지지 않음.
 - `git diff --stat`: `bench.rs +16/-6`, `flow_state.rs +86`, `flow_tests.rs +130`, `autotest.ts +96/-1`, `terms.ts +5`, `types.ts +3`. autotest.ts의 삭제 1행은 `flowOk` 집계식 마지막 항(`switchUnderLoadNoGap === true;`)의 개행 이동 — 기존 5항은 문자 그대로 보존. session.rs 무변경(reset_accounting `:686`/`:807`, disarm `:1027` 현행 유지 — PRESERVE).
 - 사전 fetch(커밋 전): `git fetch origin main && git rev-list --count --left-right origin/main...HEAD` → `0	0` (동기화 상태).

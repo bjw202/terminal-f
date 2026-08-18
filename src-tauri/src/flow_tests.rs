@@ -696,7 +696,10 @@ fn flow002_ac6_emitter_valve_direct_paused_entry_path() {
     std::thread::sleep(Duration::from_millis(90));
 
     let decision_fire = fs.emitter_gate_decision(true);
-    assert!(decision_fire, "직접 진입 경로에서도 무장 후 stall 경과 → 발화");
+    assert!(
+        decision_fire,
+        "직접 진입 경로에서도 무장 후 stall 경과 → 발화"
+    );
     assert_eq!(fs.outstanding(), 0, "발화 → 회계 리셋");
 }
 
@@ -726,7 +729,11 @@ fn flow002_ac7_emitter_valve_no_fire_while_ack_progressing() {
         16 * 1024 - acked_total,
         "미확인 구간이 회계상 삭제되지 않음 (밸브 미발화)"
     );
-    assert_eq!(fs.emitter_valve_fired_count(), 0, "진전 중 밸브 미발화 (R9)");
+    assert_eq!(
+        fs.emitter_valve_fired_count(),
+        0,
+        "진전 중 밸브 미발화 (R9)"
+    );
 }
 
 /// AC-8 (R10): `flow_stats` 응답에 `valveFired`(reader-park 밸브, 기존 카운터
@@ -748,7 +755,10 @@ fn flow002_ac8_flow_stats_exposes_valve_counters() {
 
     let after = fs.flow_stats();
     assert_eq!(after.emitter_valve_fired, 1, "발화가 flow_stats 로 관측");
-    assert_eq!(after.valve_fired, 0, "reader-park 밸브는 미발화 — 두 밸브 구분");
+    assert_eq!(
+        after.valve_fired, 0,
+        "reader-park 밸브는 미발화 — 두 밸브 구분"
+    );
     // 기존 5필드 불변 (R11 append-only) — 값은 회계 리셋 후 상태를 반영.
     assert_eq!(after.emitted, 16 * 1024);
     assert_eq!(after.acked, 16 * 1024);
@@ -758,7 +768,10 @@ fn flow002_ac8_flow_stats_exposes_valve_counters() {
 
     // 직렬화 키 camelCase 검증 — TS FlowStats 인터페이스와의 계약.
     let json = serde_json::to_string(&after).expect("FlowStats 직렬화");
-    assert!(json.contains("\"valveFired\":0"), "serde camelCase 키: valveFired");
+    assert!(
+        json.contains("\"valveFired\":0"),
+        "serde camelCase 키: valveFired"
+    );
     assert!(
         json.contains("\"emitterValveFired\":1"),
         "serde camelCase 키: emitterValveFired"

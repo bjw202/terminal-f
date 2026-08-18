@@ -226,8 +226,7 @@ impl FlowState {
                             // 규칙 1 (진전 리셋, R9): ack 전진 → 재무장, 미발화.
                             inner.paused_since = Some(now);
                             inner.paused_at_acked = acked;
-                        } else if now.duration_since(paused_at) >= self.config.stall_timeout
-                        {
+                        } else if now.duration_since(paused_at) >= self.config.stall_timeout {
                             // 규칙 2 (발화, R8): 무진전 + 타임아웃 경과 → 회계 리셋 +
                             // 카운터 + 무장 해제 + 방출 재개. reset_accounting 는 원자
                             // 연산만 사용해 락 중첩이 없다.

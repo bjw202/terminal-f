@@ -35,6 +35,10 @@ pub struct PtyOutputEvent {
     /// Sequence number of the last chunk included in `data`.
     pub seq: u64,
     pub data: String,
+    /// SPEC-PTY-FLOW-002 R2 — 배너 포함 **최종** `data` 문자열의 UTF-8 바이트 길이.
+    /// 프론트엔드 ack 수치의 유일한 출처이며(직접 산정 금지, R5), emit 회계
+    /// (`record_emit`)와 동일 원천에서 한 번만 산출된다.
+    pub byte_len: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,14 +92,18 @@ where
                         data
                     };
                     // R1: 방출한 바이트만큼 emitted 전진. reader 에게 park 재평가 통지.
-                    // 배너 접두어 길이는 흐름 회계에서 제외(백엔드 발생분이 아니라 UI 힌트).
-                    session.flow_state.record_emit(data.len());
+                    // SPEC-PTY-FLOW-002 R2: byte_len 은 배너 포함 최종 문자열에서
+                    // 단 한 번 산출되어 record_emit 과 이벤트 byteLen 이 같은 값을
+                    // 쓴다(동일 원천 — 두 지점이 나중에 어긋날 여지가 없다).
+                    let byte_len = data.len();
+                    session.flow_state.record_emit(byte_len);
                     emit_output(PtyOutputEvent {
                         workspace_id: session.workspace_id.clone(),
                         pane_id: session.pane_id.clone(),
                         session_id: session.session_id.clone(),
                         seq: last_seq,
                         data,
+                        byte_len,
                     });
                     emitted += 1;
                 }

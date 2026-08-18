@@ -70,7 +70,60 @@ clarification: `[NEEDS CLARIFICATION]` 잔여 0건 (plan.md §A.7 — 모든 설
 
 ## §E.2 Run-phase Evidence
 
-_<pending run-phase>_
+### M1 — 단위 통일 + 재현-우선 회귀 테스트 (2026-08-18)
+
+작업 트리: worktree `agent-a37d28d279bb94f48` (base `288b4a2`, Route A). 아래 모든 출력은 이 트리·이 실행에서 관측한 verbatim이다.
+
+#### RED (AC-2) — 수정 이전 실패 출력 verbatim
+
+`cd src-tauri && cargo test flow002` (구현 전, 신규 3테스트 추가 직후):
+
+```text
+error[E0609]: no field `byte_len` on type `&PtyOutputEvent`
+   --> src\flow_tests.rs:618:19
+    |
+618 |     assert_eq!(ev.byte_len, ev.data.len());
+    |                   ^^^^^^^^ unknown field
+    |
+    = note: available fields are: `workspace_id`, `pane_id`, `session_id`, `seq`, `data`
+
+error[E0609]: no field `byte_len` on type `&PtyOutputEvent`
+   --> src\flow_tests.rs:621:12
+    |
+621 |         ev.byte_len as u64,
+    |            ^^^^^^^^ unknown field
+    |
+    = note: available fields are: `workspace_id`, `pane_id`, `session_id`, `seq`, `data`
+
+For more information about this error, try `rustc --explain E0609`.
+error: could not compile `terminal-f` (lib test) due to 4 previous errors
+```
+
+계획된 RED 의 첫 형태다(plan §F M1 — `byte_len` 필드 부재 컴파일 실패). "필드는 있으나 의미론 미통일" 런타임 실패 형태는 §A.1 구현(단일 산출)이 한 번에 적용되어 출현하지 않았다 — 첫 컴파일 성공 시점에 짝 테스트가 곧바로 green.
+
+#### AC 매트릭스 (M1) — 전 항목 이 트리·이 실행 관측
+
+| AC | 판정 | 검증 명령 | 실출력 (verbatim 발췌) |
+|---|---|---|---|
+| AC-1 | PASS | `cargo test --lib flow002` + `grep -n "byte_len" src-tauri/src/output.rs` + `grep -n "byteLen" src/types.ts` | `flow002_ac1_banner_included_bytelen_same_source_as_emit ... ok` (배너 포함: record_emit 가산값 == ev.byte_len == ev.data.len()). grep: output.rs `41: pub byte_len: usize`, `98: let byte_len = data.len();`, `99: record_emit(byte_len)` / types.ts `236: byteLen: number;` |
+| AC-2 | PASS | RED 출력 상기(구현 전 캡처 — 사후 재현 불가) | `error[E0609]: no field byte_len` ×4 → `could not compile terminal-f (lib test) due to 4 previous errors` |
+| AC-3 | PASS | `cargo test --lib flow002` | `flow002_ac3_bytelen_ack_drains_outstanding_and_resumes ... ok` — 이모지(4B/2u) 포함 페이로드, ev.byteLen ack → `outstanding == 0` + 게이트 재개 true |
+| AC-4 | PASS | `grep -n "data.length" src/terms.ts` + `grep -n "ackBytes\|heldAckBytes" src/terms.ts` | data.length 매치 정확히 1건: `219: view.outBufLen += data.length;` (용량 캡 계산 — 정당 용법). ack 누적식: `222: view.heldAckBytes += meta.byteLen;` — 우변 전부 byteLen 유래 |
+| AC-5 | PASS | `grep -n "heldAckBytes" src/terms.ts` + `grep -c "TextEncoder" src/terms.ts` | 가산 대상 개별 이벤트 `meta.byteLen` 합(문자열 재산정 없음), TextEncoder 매치 0 |
+| AC-9 | PASS | `cd src-tauri && cargo test` | `test result: ok. 138 passed; 0 failed;` (lib — 기존 135 + 신규 3). 전 스위트 green(138+1+5), 신규 실패 0 |
+| AC-12 | PASS | `npx tsc --noEmit` + `cargo clippy --all-targets` | tsc `exit=0`. clippy 경고 위치: bench.rs:117/:144, state.rs:419, paste.rs:75, spool.rs:73 — 전부 사전 존재(무관 파일). M1 변경 파일(output.rs·flow_tests.rs) 경고 0건 |
+| AC-16 | PASS | (a) `grep -c "terms.writeParsedNoAck(" src/main.ts` (b) `grep -n "terms.writeOutput(" src/main.ts` (c) `grep -n -A 8 "export function writeParsedNoAck" src/terms.ts` | (a) `5` · (b) 4건 — `337`/`815` 실 PTY `{ seq: ev.seq, byteLen: ev.byteLen }` 전달, `348`/`827` 배너 2인자 · (c) `294: return writeParsed(view, data, seq, 0);` 유지 |
+
+#### 보조 검증 (M1)
+
+- `cargo fmt --check`: 신규 영역(flow_tests.rs :480 이후) 매치 0건. 저장소 전체 fmt 드리프트는 사전 존재(무관 파일 15+) — M1 스코프 외, 미손대기.
+- `git diff --stat`: `output.rs +12/-2`, `flow_tests.rs +186`, `terms.ts +28/-13`, `main.ts +5/-2`, `types.ts +2`, `Cargo.lock`(이미 커밋된 Cargo.toml 0.1.2 로의 버전 동기 — 의존성 변화 없음). §D PRESERVE 대상(flow_state.rs 상수·밸브, session.rs reset 3지점, autotest.ts 32체크 체인) 무변경.
+
+#### Gaps / Residual-risk (M1)
+
+- TS 배선 테스트 러너 부재(acceptance §D.3 구조적 갭) — terms.ts 변경은 tsc + 구조 grep(AC-4/5/16)로만 검증됨. 종단 수치 판정(AC-10e)은 M2 autotest 소관.
+- bench 실행(AC-13)·autotest 실행(E7)·@MX WARN/ANCHOR 부착(AC-14)은 M2 검증 대상 — M1 범위 아님.
+- Blocker 0건 — 본문 수정 요청 사유 없음.
 
 ## §E.3 Run-phase Audit-Ready Signal
 

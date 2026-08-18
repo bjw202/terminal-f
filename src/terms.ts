@@ -188,29 +188,41 @@ export function allViews(): PaneView[] {
  * SPEC-PTY-FLOW-001 M2: `seq` 식별 가능한 PTY 배치 이벤트일 때만 전달한다. seq 가
  * 없으면 합성 배너(exit/overflow 메시지)이므로 ack 도 parsedSeq 전진도 하지 않는다.
  * ack 는 오직 term.write 콜백(파싱 완료)에서 발생한다(R9/R12). */
-export function writeOutput(paneId: PaneId, data: string, seq?: number): void {
+export function writeOutput(
+  paneId: PaneId,
+  data: string,
+  meta?: { seq: number; byteLen: number },
+): void {
   const view = views.get(paneId);
   if (!view) return; // pane not mounted; ring buffer replay covers it later
   if (view.imeBuffering && Date.now() - view.lastInputTs > ECHO_PASS_MS) {
-    appendOutput(view, data, seq);
+    appendOutput(view, data, meta);
     return;
   }
   flushOutput(view); // no-op unless an echo chunk is overtaking held output
-  // ackBytes: seq 가 있는 배치(실 PTY 출력)만 data.length 만큼 ack 누적.
-  writeParsed(view, data, seq, seq !== undefined ? data.length : 0);
+  // ackBytes: seq 가 있는 배치(실 PTY 출력)만 이벤트 byteLen 만큼 ack 누적.
+  writeParsed(view, data, meta?.seq, meta === undefined ? 0 : meta.byteLen);
 }
 
 /** Hold a chunk in the view's IME buffer; arm the watchdog on the first chunk
  * and force-flush (keeping buffering armed) if the held size passes the cap.
  * seq-식별 가능한 청크는 heldMaxSeq/heldAckBytes 에도 반영하여 flush 시 정확한
  * parsedSeq 전진 + ack 를 보장한다(R12 — 보류중 데이터는 아직 term.write 도달 전). */
-function appendOutput(view: PaneView, data: string, seq?: number): void {
+function appendOutput(
+  view: PaneView,
+  data: string,
+  meta?: { seq: number; byteLen: number },
+): void {
   const wasEmpty = view.outBuf.length === 0;
   view.outBuf.push(data);
+  // outBufLen 은 IME 보류 버퍼 용량 캡 계산용 — ack 회계와 무관한 정당 용법(AC-4).
   view.outBufLen += data.length;
-  if (seq !== undefined) {
-    view.heldAckBytes += data.length;
-    if (view.heldMaxSeq === undefined || seq > view.heldMaxSeq) view.heldMaxSeq = seq;
+  if (meta !== undefined) {
+    // R4: 보류는 여러 이벤트를 모으므로 heldAckBytes 는 개별 byteLen 의 합.
+    view.heldAckBytes += meta.byteLen;
+    if (view.heldMaxSeq === undefined || meta.seq > view.heldMaxSeq) {
+      view.heldMaxSeq = meta.seq;
+    }
   }
   if (wasEmpty) startOutputWatchdog(view);
   if (view.outBufLen > OUTPUT_BUFFER_CAP) flushOutput(view); // runaway guard

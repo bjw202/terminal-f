@@ -458,3 +458,179 @@ fn ac_15_replay_then_pump_no_overlap() {
     );
     assert_eq!(*emitted.lock().unwrap(), 0, "replay 후 pump은 중복 방출 없음 (R16)");
 }
+
+// ==== SPEC-PTY-FLOW-002 M1 — ack 단위 불일치 재현 + 단위 통일 검증 (R1~R3, R12) ====
+
+/// 배선 수준 재현(AC-2): 비ASCII 페이로드를 `pump_once` 경로로 방출하고 이벤트
+/// `data` 의 UTF-16 코드 유닛 수로 ack(수정 이전 프론트엔드 동작 모사)하면
+/// outstanding 바닥값이 누적 결손만큼 남아 게이트가 정지 상태로 고착된다.
+/// ack 는 `record_ack` 직접 호출이 아니라 `reg.ack_output`(IPC 명령 표면)로
+/// 전달한다(R12 — 배선 우회 금지, 선행 R4 교훈).
+#[test]
+fn flow002_ac2_utf16_unit_repro_permanent_pause() {
+    use crate::output::{pump_once, PtyOutputEvent};
+    use crate::session::{PtySession, SessionRegistry};
+
+    let reg = SessionRegistry::new();
+    let session = Arc::new(PtySession::new_test("ws1", "pane1"));
+    let pane_id = session.pane_id.clone();
+    reg.insert_test_session(Arc::clone(&session));
+    reg.set_active_workspace(Some("ws1"));
+    session.replay_synced.store(true, Ordering::SeqCst);
+
+    // '가' 는 UTF-8 3바이트 / UTF-16 1유닛 → 문자당 2바이트 결손.
+    // 70000자 = 210000바이트 방출, UTF-16 ack 70000유닛 → 결손 140000바이트가
+    // HIGH(128KiB)·LOW(32KiB) 모두 상회하는 영구 잔존 바닥값이 된다.
+    let chunk = "가".repeat(70_000);
+    session.ring.lock().unwrap().push(chunk);
+
+    let events: Arc<Mutex<Vec<PtyOutputEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&events);
+    pump_once(
+        &reg,
+        &|ev: PtyOutputEvent| sink.lock().unwrap().push(ev),
+        &|_| {},
+    );
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 1, "단일 청크 → 단일 병합 이벤트");
+    let ev = &events[0];
+    let emitted_total = session.flow_state.emitted();
+    assert_eq!(emitted_total, 210_000, "record_emit 은 UTF-8 바이트로 가산");
+
+    // 구 프론트엔드 동작 모사: data.length(UTF-16 코드 유닛 수)로 ack.
+    let utf16_units = ev.data.encode_utf16().count() as u64;
+    assert_eq!(utf16_units, 70_000);
+    reg.ack_output(&pane_id, utf16_units).unwrap();
+
+    let outstanding = session.flow_state.outstanding();
+    assert_eq!(
+        outstanding, 140_000,
+        "UTF-16 단위 ack → 누적 결손이 outstanding 바닥값으로 잔존"
+    );
+
+    // 다음 tick 게이트 결정 — 결손이 HIGH 를 넘어 정지로 전이.
+    let was_paused = session.flow_state.is_emitter_paused();
+    let decision = session.flow_state.emitter_gate_decision(was_paused);
+    assert!(!decision, "outstanding(결손) > HIGH → 정지 전이");
+    assert!(session.flow_state.is_emitter_paused(), "정지 플래그 설정");
+
+    // 영구 정지 시연: 신규 데이터가 와도 정지 상태에서는 방출이 전혀 일어나지 않는다.
+    session.ring.lock().unwrap().push("가".repeat(1024));
+    pump_once(&reg, &|_ev: PtyOutputEvent| {}, &|_| {});
+    assert_eq!(
+        session.flow_state.emitted(),
+        emitted_total,
+        "정지 고착 — 이후 pump 에서 방출 없음 (영구 정지)"
+    );
+    assert!(
+        session.flow_state.outstanding() > FLOW_LOW_WATERMARK,
+        "결손 바닥값이 LOW 이하로 내려갈 수 없음 → 재개 불가"
+    );
+}
+
+/// 짝 테스트(AC-3, GREEN): 동일 배선 경로를 이벤트 `byteLen` 으로 ack하면
+/// outstanding 이 FLOW_LOW_WATERMARK 이하(여기선 정확히 0)에 도달하고 게이트가
+/// 방출 재개를 반환한다. 이모지(UTF-8 4바이트/UTF-16 2유닛) 포함 페이로드로
+/// 서로게이트 페어에서도 반사 ack 가 정확히 균형을 이루는지 함께 검증(§C 엣지).
+/// 수정 이전에는 `byte_len` 필드 부재로 컴파일 실패 — RED 의 첫 형태(AC-2).
+#[test]
+fn flow002_ac3_bytelen_ack_drains_outstanding_and_resumes() {
+    use crate::output::{pump_once, PtyOutputEvent};
+    use crate::session::{PtySession, SessionRegistry};
+
+    let reg = SessionRegistry::new();
+    let session = Arc::new(PtySession::new_test("ws1", "pane1"));
+    let pane_id = session.pane_id.clone();
+    reg.insert_test_session(Arc::clone(&session));
+    reg.set_active_workspace(Some("ws1"));
+    session.replay_synced.store(true, Ordering::SeqCst);
+
+    // '가'(3B/1u) + '─'(3B/1u) + '😀'(4B/2u) = 단위당 10바이트/4유닛.
+    // 20000반복 = 200000바이트 > HIGH(128KiB) → 1회 방출 후 정지 조건 성립.
+    let chunk = "가─😀".repeat(20_000);
+    session.ring.lock().unwrap().push(chunk);
+
+    let events: Arc<Mutex<Vec<PtyOutputEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&events);
+    pump_once(
+        &reg,
+        &|ev: PtyOutputEvent| sink.lock().unwrap().push(ev),
+        &|_| {},
+    );
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    let ev = &events[0];
+
+    // R1/R2: 이벤트 byteLen == 최종 data 의 UTF-8 바이트 길이 == emit 회계 가산값.
+    assert_eq!(ev.byte_len, ev.data.len());
+    assert_eq!(ev.data.len(), 200_000);
+    assert_eq!(session.flow_state.emitted(), 200_000);
+
+    // 게이트 정지 전이(outstanding > HIGH).
+    assert!(
+        !session.flow_state.emitter_gate_decision(false),
+        "HIGH 초과 → 정지 전이"
+    );
+    assert!(session.flow_state.is_emitter_paused());
+
+    // 수정된 프론트엔드 동작: 이벤트 byteLen 으로 ack.
+    reg.ack_output(&pane_id, ev.byte_len as u64).unwrap();
+
+    // 서로게이트 페어 포함 페이로드에서 반사 ack 후 outstanding = 0 (§C 엣지).
+    assert_eq!(session.flow_state.outstanding(), 0);
+    assert!(
+        session.flow_state.emitter_gate_decision(true),
+        "outstanding 0 <= LOW → 방출 재개"
+    );
+    assert!(
+        !session.flow_state.is_emitter_paused(),
+        "재개 후 정지 플래그 해제"
+    );
+}
+
+/// AC-1(배너 케이스): 오버플로 배너가 붙은 이벤트에서도 record_emit 가산값과
+/// 이벤트 byteLen 이 동일한 최종 문자열(배너 포함)에서 산출된다.
+#[test]
+fn flow002_ac1_banner_included_bytelen_same_source_as_emit() {
+    use crate::output::{pump_once, PtyOutputEvent};
+    use crate::session::{PtySession, SessionRegistry};
+
+    let reg = SessionRegistry::new();
+    let session = Arc::new(PtySession::new_test("ws1", "pane1"));
+    reg.insert_test_session(Arc::clone(&session));
+    reg.set_active_workspace(Some("ws1"));
+    session.replay_synced.store(true, Ordering::SeqCst);
+
+    // 1.2MiB 푸시 → RING_MAX_BYTES(1MiB) 초과로 가장 오래된 청크 퇴거 →
+    // collect_since 가 dropped=true 를 반환하고 배너가 접두된다.
+    for _ in 0..3 {
+        session.ring.lock().unwrap().push("a".repeat(400_000));
+    }
+    let emitted_before = session.flow_state.emitted();
+
+    let events: Arc<Mutex<Vec<PtyOutputEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&events);
+    pump_once(
+        &reg,
+        &|ev: PtyOutputEvent| sink.lock().unwrap().push(ev),
+        &|_| {},
+    );
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    let ev = &events[0];
+
+    assert!(
+        ev.data
+            .contains("[terminal-f: output overflow, oldest chunks dropped]"),
+        "오버플로 배너 포함"
+    );
+    // 배너 포함 최종 문자열 기준 — 배너 없는 데이터(800000바이트)보다 길다.
+    assert!(ev.data.len() > 800_000, "배너 바이트가 data 에 포함됨");
+    // 동일 원천(R2): 이벤트 byteLen == 최종 data 바이트 길이 == emit 회계 가산값.
+    assert_eq!(ev.byte_len, ev.data.len());
+    assert_eq!(
+        session.flow_state.emitted() - emitted_before,
+        ev.byte_len as u64,
+        "record_emit 가산값 == 이벤트 byteLen (배너 포함)"
+    );
+}

@@ -232,6 +232,8 @@ export interface PtyOutputEvent {
   sessionId: SessionId;
   seq: number;
   data: string;
+  /** SPEC-PTY-FLOW-002 R2 — 배너 포함 최종 data 의 UTF-8 바이트 길이(백엔드 단일 원천). */
+  byteLen: number;
 }
 
 export interface PtyExitEvent {

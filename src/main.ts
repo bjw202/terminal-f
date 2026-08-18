@@ -334,7 +334,7 @@ async function mountPane(paneId: PaneId): Promise<void> {
     for (const ev of pending) {
       if (ev.seq <= view.parsedSeq) continue;
       view.receivedSeq = ev.seq;
-      terms.writeOutput(paneId, ev.data, ev.seq);
+      terms.writeOutput(paneId, ev.data, { seq: ev.seq, byteLen: ev.byteLen });
     }
   }
 }
@@ -811,7 +811,8 @@ void ipc.onPtyOutput((ev) => {
     view.pendingReplayEvents.push(ev); // replay 진행중 — 버퍼링, 이후 순서 적용(R10 N2)
     return;
   }
-  terms.writeOutput(ev.paneId, ev.data, ev.seq); // ack 는 write 콜백에서(R9/R12)
+  // SPEC-PTY-FLOW-002 R2: ack 수치는 이벤트 byteLen(백엔드 단일 원천)으로.
+  terms.writeOutput(ev.paneId, ev.data, { seq: ev.seq, byteLen: ev.byteLen }); // ack 는 write 콜백에서(R9/R12)
 });
 
 void ipc.onPtyExit((ev) => {

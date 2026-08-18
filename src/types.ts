@@ -128,6 +128,9 @@ export interface FlowStats {
   outstanding: number;
   emitterPaused: boolean;
   readerParked: boolean;
+  // SPEC-PTY-FLOW-002 R10 — 두 밸브 카운터 신규 노출 (기존 5필드 불변, append-only).
+  valveFired: number;
+  emitterValveFired: number;
 }
 
 export interface InjectReceipt {

@@ -47,11 +47,21 @@ pub struct FlowConfig {
 
 impl Default for FlowConfig {
     fn default() -> Self {
+        // SPEC-PTY-FLOW-002 M2 (B10 완화책): TERMF_FLOW_STALL_TIMEOUT_MS 환경변수를
+        // 1회 읽어 stall_timeout 을 오버라이드한다. 미설정·파싱 실패 시 기본
+        // FLOW_STALL_TIMEOUT(10s) 불변 — 신규 임계값 상수가 아니라 테스트·계측용
+        // 오버라이드 창구다(registry 세션이 FlowState::default() 하드코딩이라 config
+        // 주입 seam 이 없으므로 env 가 유일한 수단).
+        let stall_timeout = std::env::var("TERMF_FLOW_STALL_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(FLOW_STALL_TIMEOUT);
         Self {
             high_watermark: FLOW_HIGH_WATERMARK,
             low_watermark: FLOW_LOW_WATERMARK,
             ring_pause_threshold: RING_PAUSE_THRESHOLD,
-            stall_timeout: FLOW_STALL_TIMEOUT,
+            stall_timeout,
             park_recheck: READER_PARK_RECHECK_MS,
         }
     }
@@ -64,6 +74,10 @@ struct FlowInner {
     reader_parked: bool,
     /// 마지막 ack 진전 시각 — R6 밸브 타이머의 리셋 기준.
     last_ack_at: Instant,
+    /// SPEC-PTY-FLOW-002 R7 — emitter 정지 진입 시각 (규칙 0 무장 / 규칙 2 발화 기준).
+    paused_since: Option<Instant>,
+    /// R7 — 정지 진입/마지막 진전 시점의 acked 스냅샷 (규칙 1 진전 판정 기준).
+    paused_at_acked: u64,
 }
 
 impl Default for FlowInner {
@@ -72,6 +86,8 @@ impl Default for FlowInner {
             disarmed: false,
             reader_parked: false,
             last_ack_at: Instant::now(),
+            paused_since: None,
+            paused_at_acked: 0,
         }
     }
 }
@@ -93,6 +109,8 @@ pub struct FlowState {
     emitter_paused: AtomicBool,
     /// R6 밸브 발화 횟수 (관측/디버그).
     valve_fired: AtomicU64,
+    /// SPEC-PTY-FLOW-002 R8 — emitter 정지 밸브 발화 횟수 (R10 관측 노출).
+    emitter_valve_fired: AtomicU64,
     /// 설정 — 테스트/벤치에서 축소 주입 가능(spec §C 상수 규율).
     pub config: FlowConfig,
 }
@@ -112,6 +130,7 @@ impl FlowState {
             condvar: Condvar::new(),
             emitter_paused: AtomicBool::new(false),
             valve_fired: AtomicU64::new(0),
+            emitter_valve_fired: AtomicU64::new(0),
             config,
         }
     }
@@ -168,15 +187,65 @@ impl FlowState {
 
     /// 직전 상태(was_paused)와 outstanding 에 따라 방출 여부를 결정한다.
     /// 반환 true → 방출, false → skip. emitter_paused 플래그를 갱신한다.
+    ///
+    /// @MX:WARN: [AUTO] SPEC-PTY-FLOW-002 R7~R9 — emitter 정지 안전밸브 (규칙 0~3).
+    /// @MX:REASON: reader 가 park 하지 않는 사각지대(deficit > LOW 지속 + ring
+    /// 미방출 < RING_PAUSE_THRESHOLD)에는 자가 치유 경로가 없어 emitter 정지가
+    /// 영구 고착된다. 본 밸브는 stall_timeout 무진전 시 회계를 리셋하는 열화
+    /// 경로다 — 1차 해법(단위 통일, M1)을 대체하지 않으며 밸브 발화 관측 시
+    /// 누수 경로(B11/B12) 조사가 우선이다(plan §G "밸브를 1차 해법으로 취급 금지").
+    /// 임계 구역은 원자 읽기 + 필드 2개 갱신뿐이며 블로킹 대기 없음(B5 락 규율 —
+    /// notify_reader 가 이미 같은 뮤텍스를 lock-then-notify 로 사용).
     pub fn emitter_gate_decision(&self, was_paused: bool) -> bool {
         let outstanding = self.outstanding();
-        let emit = if was_paused {
+        let mut emit = if was_paused {
             // 정지 중 → LOW 이하에서만 재개
             outstanding <= self.config.low_watermark
         } else {
             // 방출 중 → HIGH 초과에서만 정지
             outstanding <= self.config.high_watermark
         };
+
+        // ==== SPEC-PTY-FLOW-002 M2 — emitter 밸브 판정 (plan §A.3 규칙 0~3) ====
+        {
+            let now = Instant::now();
+            let mut inner = self.inner.lock().unwrap();
+            if !emit {
+                let acked = self.acked();
+                match inner.paused_since {
+                    None => {
+                        // 규칙 0 (무장): 정지 결정 + 미무장 → 무장. 발화 판정은 다음
+                        // tick 부터. 전이 직전 was_paused 값과 무관하게 이번 결정이
+                        // "정지"이면 무장하므로 (i) 방출→정지 전이와 (ii) 전이 없는
+                        // 직접 진입(was_paused=true 최초 호출)을 모두 덮는다.
+                        inner.paused_since = Some(now);
+                        inner.paused_at_acked = acked;
+                    }
+                    Some(paused_at) => {
+                        if acked > inner.paused_at_acked {
+                            // 규칙 1 (진전 리셋, R9): ack 전진 → 재무장, 미발화.
+                            inner.paused_since = Some(now);
+                            inner.paused_at_acked = acked;
+                        } else if now.duration_since(paused_at) >= self.config.stall_timeout
+                        {
+                            // 규칙 2 (발화, R8): 무진전 + 타임아웃 경과 → 회계 리셋 +
+                            // 카운터 + 무장 해제 + 방출 재개. reset_accounting 는 원자
+                            // 연산만 사용해 락 중첩이 없다.
+                            self.reset_accounting();
+                            self.emitter_valve_fired.fetch_add(1, Ordering::SeqCst);
+                            inner.paused_since = None;
+                            inner.paused_at_acked = 0;
+                            emit = true;
+                        }
+                    }
+                }
+            } else {
+                // 규칙 3 (해제): 방출 결정 → 무장 상태 초기화.
+                inner.paused_since = None;
+                inner.paused_at_acked = 0;
+            }
+        }
+
         self.emitter_paused.store(!emit, Ordering::SeqCst);
         emit
     }
@@ -285,6 +354,11 @@ impl FlowState {
         self.valve_fired.load(Ordering::SeqCst)
     }
 
+    /// SPEC-PTY-FLOW-002 R8 — emitter 정지 밸브 발화 횟수 (테스트/관측 창구).
+    pub fn emitter_valve_fired_count(&self) -> u64 {
+        self.emitter_valve_fired.load(Ordering::SeqCst)
+    }
+
     // ==== R1 관측 (flow_stats 커맨드 원천) ====
 
     pub fn flow_stats(&self) -> FlowStats {
@@ -295,6 +369,10 @@ impl FlowState {
             outstanding: self.outstanding(),
             emitter_paused: self.emitter_paused.load(Ordering::SeqCst),
             reader_parked: inner.reader_parked,
+            // SPEC-PTY-FLOW-002 R10 — 두 밸브 카운터 신규 노출(append-only).
+            // valve_fired 는 기존 내부 카운터의 값 로직 불변 노출.
+            valve_fired: self.valve_fired.load(Ordering::SeqCst),
+            emitter_valve_fired: self.emitter_valve_fired.load(Ordering::SeqCst),
         }
     }
 
@@ -321,6 +399,10 @@ pub struct FlowStats {
     pub outstanding: usize,
     pub emitter_paused: bool,
     pub reader_parked: bool,
+    /// SPEC-PTY-FLOW-002 R10 — reader-park 밸브(R6) 발화 횟수 (신규 노출).
+    pub valve_fired: u64,
+    /// SPEC-PTY-FLOW-002 R10 — emitter 정지 밸브(R8) 발화 횟수 (신규).
+    pub emitter_valve_fired: u64,
 }
 
 #[cfg(test)]

@@ -634,3 +634,133 @@ fn flow002_ac1_banner_included_bytelen_same_source_as_emit() {
         "record_emit 가산값 == 이벤트 byteLen (배너 포함)"
     );
 }
+
+// ==== SPEC-PTY-FLOW-002 M2 — emitter 정지 안전밸브 (R7~R10, AC-6/7/8) ====
+
+/// 밸브용 축소 FlowConfig (B.5 주입 패턴 계승): 작은 워터마크 + 짧은 stall_timeout.
+/// 실시간 10초 대기 금지(§G) — 60ms 로 결정론적 검증.
+fn flow002_valve_config() -> FlowConfig {
+    FlowConfig {
+        high_watermark: 8 * 1024,
+        low_watermark: 2 * 1024,
+        stall_timeout: Duration::from_millis(60),
+        ..Default::default()
+    }
+}
+
+/// AC-6 (경로 i — 방출→정지 전이): emitter 정지 + ack 무진전 상태로
+/// `stall_timeout` 경과 후 밸브가 발화하여 회계가 리셋(outstanding=0)되고
+/// 게이트가 방출 재개를 반환한다. 정지 진입 tick(무장 tick, 규칙 0)에는
+/// 발화하지 않는다.
+#[test]
+fn flow002_ac6_emitter_valve_fires_after_stall_no_ack_progress() {
+    let fs = FlowState::with_config(flow002_valve_config());
+    fs.record_emit(16 * 1024); // outstanding(16KiB) > HIGH(8KiB)
+
+    // 방출 → 정지 전이 tick: 이 tick 이 무장 tick 이며 발화하지 않는다(규칙 0).
+    let decision_arm = fs.emitter_gate_decision(false);
+    assert!(!decision_arm, "outstanding > HIGH → 정지 전이");
+    assert_eq!(
+        fs.emitter_valve_fired_count(),
+        0,
+        "무장 tick 에는 발화하지 않는다 (규칙 0)"
+    );
+
+    // outstanding 은 그대로(ack 없음) → 정지 유지. stall_timeout(60ms) 경과 대기.
+    std::thread::sleep(Duration::from_millis(90));
+
+    // 무진전 + 타임아웃 경과 → 밸브 발화: 회계 리셋 + 방출 재개(규칙 2).
+    let decision_fire = fs.emitter_gate_decision(true);
+    assert!(
+        decision_fire,
+        "밸브 발화 → 회계 리셋으로 outstanding=0 → 방출 재개"
+    );
+    assert_eq!(fs.outstanding(), 0, "밸브 발화 → R15 회계 리셋");
+    assert_eq!(fs.emitter_valve_fired_count(), 1, "발화 카운터 증가");
+    assert!(!fs.is_emitter_paused(), "발화 후 정지 플래그 해제");
+}
+
+/// AC-6 (경로 ii — 전이 없이 정지 상태로 직접 진입): 기존 테스트가
+/// `emitter_gate_decision` 을 상태 전이 없이 직접 호출하던 패턴
+/// (flow_tests.rs:22-45)을 반영. was_paused=true 로 직접 진입한 첫 tick 도
+/// 규칙 0 무장으로 처리되어 발화하지 않으며, 이후 stall_timeout 경과 후 발화한다.
+#[test]
+fn flow002_ac6_emitter_valve_direct_paused_entry_path() {
+    let fs = FlowState::with_config(flow002_valve_config());
+    fs.record_emit(16 * 1024);
+
+    // 전이 없이 정지 상태로 직접 진입 — paused_since 가 None 인 채 정지 관측.
+    let decision_arm = fs.emitter_gate_decision(true);
+    assert!(!decision_arm, "outstanding(16KiB) > LOW(2KiB) → 정지 유지");
+
+    std::thread::sleep(Duration::from_millis(90));
+
+    let decision_fire = fs.emitter_gate_decision(true);
+    assert!(decision_fire, "직접 진입 경로에서도 무장 후 stall 경과 → 발화");
+    assert_eq!(fs.outstanding(), 0, "발화 → 회계 리셋");
+}
+
+/// AC-7 (부정 테스트, R9): emitter 정지 중 ack 이 (느리게라도) 계속 전진하면
+/// 매 tick 재무장되어 stall_timeout 을 훨씬 넘긴 시간이 흘러도 밸브이 발화하지
+/// 않는다. 느린 팬의 미확인 구간이 회계상 삭제되지 않음을 보장(B3).
+#[test]
+fn flow002_ac7_emitter_valve_no_fire_while_ack_progressing() {
+    let fs = FlowState::with_config(flow002_valve_config());
+    fs.record_emit(16 * 1024);
+    assert!(!fs.emitter_gate_decision(false), "정지 전이 + 무장");
+
+    // 매 반복: stall_timeout(60ms)보다 긴 70ms 대기 후 ack 진전 → 게이트 호출.
+    // 진전이 있으므로 매번 타이머가 리셋(규칙 1)되어 발화하지 않는다.
+    let mut acked_total = 0u64;
+    for _ in 0..8 {
+        std::thread::sleep(Duration::from_millis(70));
+        fs.record_ack(1024);
+        acked_total += 1024;
+        let decision = fs.emitter_gate_decision(true);
+        assert!(!decision, "outstanding 여전히 LOW 초과 → 정지 유지");
+    }
+    // 총 560ms 경과 — stall_timeout(60ms)의 9배. 진전 중 발화 없음.
+    let outstanding = fs.outstanding() as u64;
+    assert_eq!(
+        outstanding,
+        16 * 1024 - acked_total,
+        "미확인 구간이 회계상 삭제되지 않음 (밸브 미발화)"
+    );
+    assert_eq!(fs.emitter_valve_fired_count(), 0, "진전 중 밸브 미발화 (R9)");
+}
+
+/// AC-8 (R10): `flow_stats` 응답에 `valveFired`(reader-park 밸브, 기존 카운터
+/// 노출)와 `emitterValveFired`(emitter 밸브, 신규 카운터) 두 필드가 신규 노출되고
+/// emitter 밸브 발화가 그 값으로 관측된다. 기존 5필드는 이름·타입·의미 불변(R11).
+#[test]
+fn flow002_ac8_flow_stats_exposes_valve_counters() {
+    let fs = FlowState::with_config(flow002_valve_config());
+
+    // 발화 전: 두 카운터 모두 0 노출.
+    let before = fs.flow_stats();
+    assert_eq!(before.emitter_valve_fired, 0);
+    assert_eq!(before.valve_fired, 0);
+
+    fs.record_emit(16 * 1024);
+    assert!(!fs.emitter_gate_decision(false), "정지 전이 + 무장");
+    std::thread::sleep(Duration::from_millis(90));
+    assert!(fs.emitter_gate_decision(true), "밸브 발화");
+
+    let after = fs.flow_stats();
+    assert_eq!(after.emitter_valve_fired, 1, "발화가 flow_stats 로 관측");
+    assert_eq!(after.valve_fired, 0, "reader-park 밸브는 미발화 — 두 밸브 구분");
+    // 기존 5필드 불변 (R11 append-only) — 값은 회계 리셋 후 상태를 반영.
+    assert_eq!(after.emitted, 16 * 1024);
+    assert_eq!(after.acked, 16 * 1024);
+    assert_eq!(after.outstanding, 0);
+    assert!(!after.emitter_paused);
+    assert!(!after.reader_parked);
+
+    // 직렬화 키 camelCase 검증 — TS FlowStats 인터페이스와의 계약.
+    let json = serde_json::to_string(&after).expect("FlowStats 직렬화");
+    assert!(json.contains("\"valveFired\":0"), "serde camelCase 키: valveFired");
+    assert!(
+        json.contains("\"emitterValveFired\":1"),
+        "serde camelCase 키: emitterValveFired"
+    );
+}

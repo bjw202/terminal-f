@@ -200,6 +200,11 @@ export function writeOutput(
     return;
   }
   flushOutput(view); // no-op unless an echo chunk is overtaking held output
+  // @MX:ANCHOR: [AUTO] SPEC-PTY-FLOW-002 반사 ack 계약 — ack 수치는 이벤트 byteLen 에서만.
+  // @MX:REASON: 백엔드가 emit 회계와 동일 원천(배너 포함 최종 문자열, R2)에서 산출한
+  // byteLen 을 프론트가 그대로 반사한다. UTF-16 코드 유닛 수 기반 산정으로 되돌아가면
+  // 비ASCII 에서 결손이 누적되어 emitter 가 영구 정지된다(SPEC-PTY-FLOW-002 결함).
+  // autotest u8FloodAckRatio(AC-10e) 가 이 계약의 종단 가드다.
   // ackBytes: seq 가 있는 배치(실 PTY 출력)만 이벤트 byteLen 만큼 ack 누적.
   writeParsed(view, data, meta?.seq, meta === undefined ? 0 : meta.byteLen);
 }

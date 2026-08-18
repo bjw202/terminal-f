@@ -261,9 +261,14 @@ fn main() {
     // 없음(R14)을 확인한다.
     //
     // @MX:NOTE: reader park(R4) 관측 제약 — plan §B.5 는 bench/test 빌드에서
-    // 축소 워터마크 주입을 요구하나, M1 이 spawn_session 에 config 주입 경로를
-    // 제공하지 않았다(FlowState::with_config 는 standalone 인스턴스에만 사용 가능,
-    // spawned 세션은 Arc<PtySession> 배후라 config 필드 수정 불가). 또한 M1 의
+    // 축소 워터마크 주입을 요구하나, spawn_session 에 config 주입 경로가 없다
+    // (FlowState::with_config 는 standalone 인스턴스에만 사용 가능, spawned 세션은
+    // Arc<PtySession> 배후라 config 필드 수정 불가). SPEC-PTY-FLOW-002 M2 부터
+    // stall_timeout 만 예외적으로 env 오버라이드 가능하다 — FlowConfig::default 가
+    // TERMF_FLOW_STALL_TIMEOUT_MS 를 1회 파싱하며, bench 는 Phase A 의 정확히 10초
+    // 무ack 구간과 밸브 기본 stall_timeout(10s)의 경계 충돌(B10)을 피하려고
+    // 60000(ms)으로 확대해 실행한다(AC-13). 나머지 워터마크는 여전히 주입 불가.
+    // 또한 M1 의
     // check_reader_park_gate 가 un_emitted 를 chunk 수(last_seq 차이)로 산출하여
     // byte 단위 RING_PAUSE_THRESHOLD(768 KiB=786432)와 단위가 불일치해 기본
     // config 에서 reader park 가 사실상 발생하지 않는다. 두 M1 갭 모두 본 M3
@@ -324,6 +329,9 @@ fn main() {
                 "outstanding": s.outstanding,
                 "emitter_paused": s.emitter_paused,
                 "reader_parked": s.reader_parked,
+                // SPEC-PTY-FLOW-002 AC-13 — 손수 나열하는 표본이므로 신규 필드가
+                // 구조체에서 자동으로 따라오지 않는다. 명시적으로 열거한다.
+                "emitter_valve_fired": s.emitter_valve_fired,
             }));
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -363,6 +371,8 @@ fn main() {
                 "outstanding": s.outstanding,
                 "emitter_paused": s.emitter_paused,
                 "reader_parked": s.reader_parked,
+                // SPEC-PTY-FLOW-002 AC-13 — Phase A 와 동일하게 명시 열거.
+                "emitter_valve_fired": s.emitter_valve_fired,
             }));
         }
         std::thread::sleep(Duration::from_millis(50));

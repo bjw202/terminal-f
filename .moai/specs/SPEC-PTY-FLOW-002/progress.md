@@ -125,9 +125,100 @@ error: could not compile `terminal-f` (lib test) due to 4 previous errors
 - bench 실행(AC-13)·autotest 실행(E7)·@MX WARN/ANCHOR 부착(AC-14)은 M2 검증 대상 — M1 범위 아님.
 - Blocker 0건 — 본문 수정 요청 사유 없음.
 
+### M2 — emitter 정지 안전밸브 + 비ASCII 홍수 autotest (2026-08-18)
+
+작업 트리: worktree `agent-a16557c1054b0f81a` (base `071be08` = M1 포함, Route A). 아래 모든 출력은 이 트리·이 실행에서 관측한 verbatim이다.
+
+#### RED (E2) — 두 형태의 실패 출력 verbatim
+
+**1단계 — 런타임 실패 (동작 갭 증명, 기존 API 만으로 작성한 테스트)**. `cd src-tauri && cargo test flow002_` (GREEN 구현 전):
+
+```text
+running 6 tests
+test flow_tests::flow002_ac3_bytelen_ack_drains_outstanding_and_resumes ... ok
+test flow_tests::flow002_ac1_banner_included_bytelen_same_source_as_emit ... ok
+test flow_tests::flow002_ac2_utf16_unit_repro_permanent_pause ... ok
+test flow_tests::flow002_ac6_emitter_valve_direct_paused_entry_path ... FAILED
+test flow_tests::flow002_ac6_emitter_valve_fires_after_stall_no_ack_progress ... FAILED
+test flow_tests::flow002_ac7_emitter_valve_no_fire_while_ack_progressing ... ok
+
+---- flow_tests::flow002_ac6_emitter_valve_direct_paused_entry_path stdout ----
+thread 'flow_tests::flow002_ac6_emitter_valve_direct_paused_entry_path' (28804) panicked at src\flow_tests.rs:693:5:
+직접 진입 경로에서도 무장 후 stall 경과 → 발화
+
+---- flow_tests::flow002_ac6_emitter_valve_fires_after_stall_no_ack_progress stdout ----
+thread 'flow_tests::flow002_ac6_emitter_valve_fires_after_stall_no_ack_progress' (5836) panicked at src\flow_tests.rs:669:5:
+밸브 발화 → 회계 리셋으로 outstanding=0 → 방출 재개
+
+test result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 135 filtered out; finished in 0.56s
+```
+
+AC-7 부정 테스트는 GREEN 전 가통과(밸브 자체가 없어 발화 불가능 — 가드로서 GREEN 후 유의해짐). AC-6 두 경로(전이/직접 진입)가 실제로 정지 고착함을 증명.
+
+**2단계 — 컴파일 실패 (신규 API 부재, M1 RED 선례 형식)**. 카운터·FlowStats 필드 참조로 확장 후 `cargo test flow002_ac8`:
+
+```text
+error[E0609]: no field `emitter_valve_fired` on type `FlowStats`
+   --> src\flow_tests.rs:750:22
+    |
+750 |     assert_eq!(after.emitter_valve_fired, 1, "발화가 flow_stats 로 관측");
+    |                      ^^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `emitted`, `acked`, `outstanding`, `emitter_paused`, `reader_parked`
+
+Some errors have detailed explanations: E0599, E0609.
+error: could not compile `terminal-f` (lib test) due to 7 previous errors
+```
+
+#### AC 매트릭스 (M2) — 전 항목 이 트리·이 실행 관측
+
+| AC | 판정 | 검증 명령 | 실출력 (verbatim 발췌) |
+|---|---|---|---|
+| AC-6 | PASS | `cargo test flow002_ac6` | `flow002_ac6_emitter_valve_fires_after_stall_no_ack_progress ... ok` + `flow002_ac6_emitter_valve_direct_paused_entry_path ... ok` — 무장 tick 미발화(규칙 0) + stall_timeout(60ms 축소 주입) 경과 후 발화·`outstanding=0`·카운터 1·재개. 두 진입 경로(전이/직접) 모두 |
+| AC-7 | PASS | `cargo test flow002_ac7` | `flow002_ac7_emitter_valve_no_fire_while_ack_progressing ... ok` — 매 tick stall_timeout(60ms) 초과(70ms) 대기 + ack 진전(1024B) 8회 = 총 560ms 경과에도 `emitter_valve_fired == 0` + `outstanding == 16KiB - 8KiB`(미확인 구간 회계상 삭제 없음) |
+| AC-8 | PASS | `cargo test flow002_ac8` + `grep -n "emitter_valve_fired\|valve_fired" src-tauri/src/flow_state.rs` + `grep -n "emitterValveFired\|valveFired" src/types.ts` | 테스트 ok — `flow_stats().emitter_valve_fired == 1`(발화 관측), `valve_fired == 0`(reader 밸브와 구분), 기존 5필드 불변, serde 키 `"valveFired":0` / `"emitterValveFired":1` (camelCase). grep: flow_state.rs `pub valve_fired` / `pub emitter_valve_fired` (FlowStats) + types.ts `valveFired: number;` / `emitterValveFired: number;` |
+| AC-10a~f | PASS | `TERMF_AUTOTEST=1 cargo run --features tauri/custom-protocol` → `src-tauri/autotest-report.json` (정본) | `ok=true` `flowOk=true` `errors=[]`. 6판정: `u8FloodAckProgress=true` `u8FloodOutstandingBounded=true` `u8FloodTailRendered=true` `u8FloodNoPermanentPause=true` `u8FloodAckRatio=true` `u8FloodNoValveRescue=true`. step: `u8-flood(AC-10a~f): ackProg:true outstandingBounded:true (max=0) tail:true noPermPause:true ackRatio:true (1.000) noValveRescue:true samples:3` |
+| AC-11 | PASS | 동일 리포트 | 기존 5항 전부 `true`: `floodAckProgress` / `floodOutstandingBounded` / `floodNoOverflow` / `floodTailRendered` / `switchUnderLoadNoGap` — `flowOk === true` AND `ok === true` 병기 성립 |
+| AC-13 | PASS | `cd src-tauri && TERMF_FLOW_STALL_TIMEOUT_MS=60000 TERMF_BENCH_OUT=<evidence>/bench-report.json cargo run --bin bench` | stdout `[bench] flow soak done: emitterPausedInA:true outstandingEndA:751493 outstandingDrainedInB:true oldest_drop_during_ack:0`. 리포트 판독: `flow_ok=true`, 표본 312건 중 `emitter_valve_fired != 0` 표본 0건 (max=0) |
+| AC-14 | PASS | `grep -n "@MX:" src-tauri/src/flow_state.rs src/terms.ts` | flow_state.rs:191-192 `@MX:WARN: [AUTO] SPEC-PTY-FLOW-002 R7~R9 — emitter 정지 안전밸브 (규칙 0~3)` + `@MX:REASON`(한국어) / terms.ts:203-204 `@MX:ANCHOR: [AUTO] SPEC-PTY-FLOW-002 반사 ack 계약 — ack 수치는 이벤트 byteLen 에서만` + `@MX:REASON`(한국어) |
+
+#### 보조 검증 (M2)
+
+- `cd src-tauri && cargo test`: `142 passed; 0 failed` (lib — 기존 138 + M2 신규 4) + `1 passed`(doc/bin) + `5 passed` = 전 스위트 green, 신규 실패 0.
+- `cd src-tauri && cargo clippy --all-targets`: 경고 위치 전량 `bench.rs:117/:144, state.rs:419, paste.rs:75, spool.rs:73` — 전부 사전 존재(무관 파일·무관 행). M2 변경 파일(flow_state.rs·flow_tests.rs·bench.rs M2 영역) 경고 0건 → NEW 경고 0.
+- `npx tsc --noEmit`: `exit=0`.
+- `cargo fmt --check`: flow_state.rs / flow_tests.rs 매치 0건(신규 영역 fmt 청결). bench.rs fmt 드리프트는 전부 사전 존재 행(`pump_dsr(...)` — 미수정 행)이며 저장소 전체 드리프트(audit.rs·automation.rs 등)는 M2 스코프 밖.
+- `grep -n "data.length" src/terms.ts`: 매치 정확히 1건(`:224 view.outBufLen += data.length`) — M1 AC-4 기준이 M2 코멘트 추가(@MX:ANCHOR)로 깨지지 않음.
+- `git diff --stat`: `bench.rs +16/-6`, `flow_state.rs +86`, `flow_tests.rs +130`, `autotest.ts +96/-1`, `terms.ts +5`, `types.ts +3`. autotest.ts의 삭제 1행은 `flowOk` 집계식 마지막 항(`switchUnderLoadNoGap === true;`)의 개행 이동 — 기존 5항은 문자 그대로 보존. session.rs 무변경(reset_accounting `:686`/`:807`, disarm `:1027` 현행 유지 — PRESERVE).
+- 사전 fetch(커밋 전): `git fetch origin main && git rev-list --count --left-right origin/main...HEAD` → `0	0` (동기화 상태).
+
+#### Gaps / Residual-risk (M2)
+
+- **u8 홍수 3표본의 `outstanding max=0`**: 이 실행 환경의 프론트엔드가 홍수를 즉시 따라가며(ASCII 홍수도 max=22892) 표본이 drain 후 꼬리만 포착했다. 판정 (b)는 자명 통과였고, 결함 검출력은 (e) ackRatio 1.000(UTF-16 회귀 시 pane 생애 비율 ~0.67로 하락 → 기준 0.9 미달)과 (f) 밸브 증가 0이 실질 담당. 백프레셔가 걸리는 느린 렌더 환경에서 (b)가 본래 강도로 작동한다.
+- **autotest 실행 함정(환경 기록)**: debug `cargo run`(tauri CLI 경유 아님)은 `devUrl`(localhost:5173)을 사용 — vite 서버 없으면 프론트가 로드되지 않아 autotest가 시작되지도 않고 앱이 무기한 대기한다. 1차 시행이 이 함정으로 공회전(프로세스 종료 후 재실행). 정상 경로는 `npm run build` 후 `cargo run --features tauri/custom-protocol`(dist 번들). 본 리포트는 2차 실행의 것이다.
+- bench 1차 실행에서 `TERMF_BENCH_OUT`에 POSIX 경로(`/c/...`)를 전달해 Rust `fs::write`가 실패(panic이 grep 필터로 가려짐) — 출력 디렉터리 생성 + Windows 경로 지정 후 재실행으로 해결. 최종 리포트는 2차 실행의 것이며 AC-13 판정은 그것으로 수행.
+- TS 러너 부재(acceptance §D.3) — M2의 autotest.ts 변경은 tsc + 실기기 autotest(AC-10a~f)로 검증. 단위 커버리지 산정 미수행(러너 부재).
+- Blocker 0건 — 본문 수정 요청 사유 없음.
+
 ## §E.3 Run-phase Audit-Ready Signal
 
-_<pending run-phase>_
+```yaml
+run_status: audit-ready
+run_complete_at: 2026-08-18
+run_commit_sha: pending-backfill-m2   # 자기 참조 불가 — 커밋 후 backfill 커밋으로 실측 SHA 기입
+ac_pass_count: 15   # AC-1~AC-14 + AC-16 (AC-10 sub-ID 6개는 1건 계수). AC-15는 sync 소관
+ac_fail_count: 0
+preserve_list_post_run_count: 12   # plan §D PRESERVE 전 항목 무변경 (상기 보조 검증)
+l44_pre_commit_fetch: "0\t0"   # 2026-08-18 커밋 전 fetch — 동기화 상태
+l44_post_push_fetch: pending-backfill-m2
+new_warnings_or_lints_introduced: 0   # clippy 경고 전량 사전 존재 위치 / tsc exit 0
+cross_platform_build:
+  applicable: false   # Windows 전용 Tauri/ConPTY 앱 — 교차 플랫폼 빌드 대상 아님
+total_run_phase_files: 8   # M1 5건 ∪ M2 6건 (output.rs, flow_state.rs, flow_tests.rs, bin/bench.rs, terms.ts, types.ts, main.ts, autotest.ts)
+m1_to_mN_commit_strategy: 마일스톤별 개별 커밋 + direct push (Route A Hybrid Trunk) — M1 071be08, M2 본 커밋 + SHA backfill 커밋
+```
+
+_run-phase 완료 — M1(단위 통일) + M2(안전밸브 + 종단 가드) 전 검증 대상 PASS. sync 단계(§F.S: ADR-014 개정 등, AC-15) 대기._
 
 ## §E.4 Sync-phase Audit-Ready Signal
 

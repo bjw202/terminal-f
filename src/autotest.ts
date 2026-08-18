@@ -318,6 +318,92 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
       `flood-flow(AC-9): ackProg:${floodAckProgress} outstandingBounded:${floodOutstandingBounded} (max=${floodMaxOutstanding}) noOverflow:${floodNoOverflow} tail:${floodTailRendered} samples:${floodSamples.length}`,
     );
 
+    // -- SPEC-PTY-FLOW-002 M2: 비ASCII(UTF-8) 홍수 체크 (AC-10a~f) ------------
+    // @MX:NOTE: [AUTO] 한국어+박스드로잉 지배 행 홍수 — ack 단위 불일치 회귀(UTF-16
+    // 코드 유닛 ack)를 종단에서 잡는다. (e) u8FloodAckRatio>=0.9 이 수치 판정의
+    // 핵심이고(회귀 시 ~0.35까지 하락), (f) emitterValveFired 증가 0 이 "밸브 구제로
+    // 통과"를 차단한다(plan §A.5 — (a)~(d)만으로는 밸브 도입 후 결함이 통과한다).
+    // 체크 실패 시 결함 판정 전에 콘솔 인코딩을 먼저 확인한다(B6) — 인코딩이 깨지면
+    // 체크가 결함이 아니라 환경을 측정한다.
+    await ipc.writePane(
+      floodPane,
+      "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $pad='─'*80; 1..4000 | ForEach-Object { \"한글출력 $_ $pad\" }; 'TERMF_U8FLOOD_DONE'\r",
+    );
+    const u8Samples: Array<{
+      t: number; emitted: number; acked: number;
+      outstanding: number; emitterPaused: boolean; readerParked: boolean;
+      valveFired: number; emitterValveFired: number;
+    }> = [];
+    let u8Done = false;
+    const u8Deadline = Date.now() + 20000;
+    while (Date.now() < u8Deadline) {
+      const stats = await ipc.flowStats(floodPane).catch(() => null);
+      if (stats) {
+        u8Samples.push({
+          t: Date.now(),
+          emitted: stats.emitted,
+          acked: stats.acked,
+          outstanding: stats.outstanding,
+          emitterPaused: stats.emitterPaused,
+          readerParked: stats.readerParked,
+          valveFired: stats.valveFired,
+          emitterValveFired: stats.emitterValveFired,
+        });
+      }
+      if (ctl.readBuffer(floodPane).includes("TERMF_U8FLOOD_DONE")) {
+        u8Done = true;
+        break;
+      }
+      await sleep(200);
+    }
+    // 꼬리 렌더 직후 마지막 ack 배치(ACK_BATCH_BYTES=4KiB + idle 플러시)가
+    // 도착할 여유를 두고 최종 표본을 확정한다 — (e) 비율 판정의 안정화.
+    if (u8Done) {
+      await sleep(600);
+      const settled = await ipc.flowStats(floodPane).catch(() => null);
+      if (settled) {
+        u8Samples.push({
+          t: Date.now(),
+          emitted: settled.emitted,
+          acked: settled.acked,
+          outstanding: settled.outstanding,
+          emitterPaused: settled.emitterPaused,
+          readerParked: settled.readerParked,
+          valveFired: settled.valveFired,
+          emitterValveFired: settled.emitterValveFired,
+        });
+      }
+    }
+    // AC-10a~f 판정:
+    const u8First = u8Samples[0];
+    const u8Last = u8Samples[u8Samples.length - 1];
+    const u8FloodAckProgress =
+      u8Samples.length >= 2 && !!u8Last && u8Last.acked > u8First.acked;
+    const u8MaxOutstanding = u8Samples.reduce(
+      (m, s) => Math.max(m, s.outstanding),
+      0,
+    );
+    const u8FloodOutstandingBounded = u8MaxOutstanding <= 512 * 1024;
+    const u8FloodTailRendered = u8Done;
+    const u8FloodNoPermanentPause =
+      u8Samples.length > 0 &&
+      !u8Samples.slice(-3).every((s) => s.emitterPaused === true);
+    const u8FloodAckRatio =
+      !!u8Last && u8Last.emitted > 0 && u8Last.acked / u8Last.emitted >= 0.9;
+    const u8FloodNoValveRescue =
+      !!u8First &&
+      !!u8Last &&
+      u8Last.emitterValveFired - u8First.emitterValveFired === 0;
+    report.checks.u8FloodAckProgress = u8FloodAckProgress;
+    report.checks.u8FloodOutstandingBounded = u8FloodOutstandingBounded;
+    report.checks.u8FloodTailRendered = u8FloodTailRendered;
+    report.checks.u8FloodNoPermanentPause = u8FloodNoPermanentPause;
+    report.checks.u8FloodAckRatio = u8FloodAckRatio;
+    report.checks.u8FloodNoValveRescue = u8FloodNoValveRescue;
+    step(
+      `u8-flood(AC-10a~f): ackProg:${u8FloodAckProgress} outstandingBounded:${u8FloodOutstandingBounded} (max=${u8MaxOutstanding}) tail:${u8FloodTailRendered} noPermPause:${u8FloodNoPermanentPause} ackRatio:${u8FloodAckRatio} (${u8Last ? (u8Last.acked / Math.max(1, u8Last.emitted)).toFixed(3) : "n/a"}) noValveRescue:${u8FloodNoValveRescue} samples:${u8Samples.length}`,
+    );
+
     // -- SPEC-PTY-FLOW-001 M3: switch-under-load (AC-10a, 결함 2 회귀) --------
     // @MX:NOTE: 홍수 중 워크스페이스 전환 시 스냅샷/replay 경계의 내용 공백(gap)
     // 없음을 검증. 전환 이탈 시 snapshotAndDispose(parsedSeq 기준) → 복귀 시
@@ -823,12 +909,20 @@ export async function runAutotest(ctl: AutotestCtl): Promise<void> {
   // 구현 상태에 의존하므로, 본 검사가 실패하더라도 기존 32 체크의 판정이
   // 가려지지 않도록 분리한다. 사용자는 report.flowOk 와 report.flowControl 을
   // 별도로 판독한다(리포트 파일이 정본).
+  // SPEC-PTY-FLOW-002 M2 — flowOk 집계식 append-only 확장: 기존 5항은 문자 그대로
+  // 보존하고 신규 6항(u8Flood*)만 AND로 덧붙인다(§A.5 명시적 PRESERVE 예외).
   report.flowOk =
     report.checks.floodAckProgress === true &&
     report.checks.floodOutstandingBounded === true &&
     report.checks.floodNoOverflow === true &&
     report.checks.floodTailRendered === true &&
-    report.checks.switchUnderLoadNoGap === true;
+    report.checks.switchUnderLoadNoGap === true &&
+    report.checks.u8FloodAckProgress === true &&
+    report.checks.u8FloodOutstandingBounded === true &&
+    report.checks.u8FloodTailRendered === true &&
+    report.checks.u8FloodNoPermanentPause === true &&
+    report.checks.u8FloodAckRatio === true &&
+    report.checks.u8FloodNoValveRescue === true;
 
   try {
     await ipc.autotestReport(report);

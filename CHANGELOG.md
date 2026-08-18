@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-19
+
 ### Fixed
 - **SPEC-PTY-FLOW-002**: ack 회계 단위 불일치(UTF-16 유닛 vs UTF-8 바이트)로 인한 non-ASCII 대량 출력 시 팬 출력 영구 정지 수정
   - 회계 단위 통일(R2/R5): `PtyOutputEvent.byteLen`(배너 포함 UTF-8 바이트, 백엔드 단일 원천)을 프론트가 반사 ack — UTF-16 코드 유닛 재산정 금지 (`src-tauri/src/output.rs`, `src/terms.ts`)

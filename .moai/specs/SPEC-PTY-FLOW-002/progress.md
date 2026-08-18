@@ -205,12 +205,12 @@ error: could not compile `terminal-f` (lib test) due to 7 previous errors
 ```yaml
 run_status: audit-ready
 run_complete_at: 2026-08-18
-run_commit_sha: pending-backfill-m2   # 자기 참조 불가 — 커밋 후 backfill 커밋으로 실측 SHA 기입
+run_commit_sha: 2ab118c   # M2 커밋 (progress.md §E.2/§E.3 동반) — 자기 참조 불가로 backfill 커밋으로 기입
 ac_pass_count: 15   # AC-1~AC-14 + AC-16 (AC-10 sub-ID 6개는 1건 계수). AC-15는 sync 소관
 ac_fail_count: 0
 preserve_list_post_run_count: 12   # plan §D PRESERVE 전 항목 무변경 (상기 보조 검증)
 l44_pre_commit_fetch: "0\t0"   # 2026-08-18 커밋 전 fetch — 동기화 상태
-l44_post_push_fetch: pending-backfill-m2
+l44_post_push_fetch: "0\t0"   # 2026-08-18 push 후 fetch — origin/main == HEAD(2ab118c) 동기화 확인
 new_warnings_or_lints_introduced: 0   # clippy 경고 전량 사전 존재 위치 / tsc exit 0
 cross_platform_build:
   applicable: false   # Windows 전용 Tauri/ConPTY 앱 — 교차 플랫폼 빌드 대상 아님

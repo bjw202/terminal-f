@@ -133,13 +133,18 @@ ConPTY output
   → [active workspace only] emitter thread, 16 ms tick, one coalesced event per pane
     → SPEC-PTY-FLOW-001 ack-watermark flow control:
       - ack 기반 워터마크 게이트(R3): outstanding > HIGH(128KiB) 시 정지, ≤ LOW(32KiB) 시 재개
+        · 회계 단위 = UTF-8 바이트, 백엔드 단일 원천(SPEC-PTY-FLOW-002):
+          emit은 PtyOutputEvent.byteLen, 프론트는 그 값을 반사 ack(재산정 금지)
       - reader park(R4): ring > RING_PAUSE_THRESHOLD(768KiB) 시 reader park → ConPTY 파이프 차오름 → 자식 write() 블로킹
-      - 정지 밸브(R6): 10s 무ack 시 폴백(oldest-drop + overflow 배너)
+      - 정지 밸브(R6, reader 측): 10s 무ack 시 폴백(oldest-drop + overflow 배너)
+      - emitter 정지 안전밸브(SPEC-PTY-FLOW-002): emitter 정지 + 10s 무ack 진전 시 회계 리셋·방출 재개
+        (최종 방어선 — 정상 경로에서 emitter_valve_fired == 0)
   → Tauri event "pty-output" { workspaceId, paneId, sessionId, seq, data }
   → xterm.write(data) → parse callback → ack_output(paneId, parsed bytes)
 ```
 
 - **SPEC-PTY-FLOW-001 흐름 제어**: 프론트엔드가 파싱 완료된 바이트를 `ack_output`으로 보고. 백엔드는 미확인(outstanding = emitted - acked) 바이트가 워터마크를 넘으면 방출을 멈춘고(활성 팬 프리즈 방지), ring이 임계치를 넘으면 reader가 park 하여 자식 write()를 블로킹한다. 죽은 프론트는 정지 밸브가 10s 후 폴백한다.
+- **SPEC-PTY-FLOW-002 회계 단위 통일 + emitter 밸브**: ack 수치는 백엔드가 산정한 `PtyOutputEvent.byteLen`(UTF-8 바이트)을 프론트가 반사 보고한다 — 프론트의 UTF-16 유닛 수 재산정은 금지(단위 불일치 시 non-ASCII 출력에서 outstanding이 영구 잔존하여 출력 정지). emitter 게이트에도 독립 안전밸브가 있어(정지 + 10s 무ack 진전 → 회계 리셋·재개, `TERMF_FLOW_STALL_TIMEOUT_MS`로 오버라이드) 미확인 ack 누수(마운트 해제 pane early-return, ack IPC 실패 삼킴)를 흡수한다.
 - **비활성 워크스페이스**: **이벤트 없음**; 출력은 링 버퍼에 누적되고 전환 시
   리플레이된다 (`replay_pane(paneId, fromSeq)`).
 - **순서 보장**: 세션별 단조 증가 `seq`. 프론트엔드는 `receivedSeq`(수신 시점)와 `parsedSeq`(파싱 완료, **정본**)를 분리하여, `replay_pane(paneId, parsedSeq)`와 `snapshot.lastSeq`가 정본 seq를 사용한다(결함 2 수정). ack는 live emit 경로만 전진한다(R13 — replay 데이터는 ack하지 않음).

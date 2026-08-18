@@ -20,11 +20,13 @@ ack 기반 워터마크 흐름 제어로 OS 수준 블로킹 사슬을 IPC 경�
 
 ### 핵심 아키텍처
 
-1. **ack-watermark R3 히스테리시스**: 프론트엔드가 **파싱을 마친** 바이트를 `ack_output`으로 보고하고, 백엔드는 미확인(outstanding) 바이트가 워터마크를 넘으면 방출을 멈춘다.
+1. **ack-watermark R3 히스테리시스**: 프론트엔드가 **파싱을 마친** 바이트를 `ack_output`으로 보고하고, 백엔드는 미확인(outstanding) 바이트가 워터마크를 넘으면 방출을 멈춘다. **회계 단위는 UTF-8 바이트이며 백엔드가 단일 원천이다** — emit 측은 `PtyOutputEvent.byteLen`(배너 포함 최종 문자열의 바이트 길이, `output.rs`의 `byte_len`)을, ack 측은 프론트엔드가 그 값을 **반사**(재산정 없이 그대로)하여 보고한다(SPEC-PTY-FLOW-002 R2/R5). 프론트엔드의 UTF-16 코드 유닛 수 기반 재산정은 금지된다(단위 불일치 → outstanding 영구 잔존 → 출력 정지).
 
 2. **reader park R4**: 활성 세션의 ring이 `RING_PAUSE_THRESHOLD`를 넘으면 reader 스레드가 read를 멈춰 ConPTY 파이프를 차오르게 하고, 자식 프로세스의 write()가 표준 터미널 동작대로 블로킹된다.
 
-3. **정지 밸브 R6**: `FLOW_STALL_TIMEOUT`(10s) 동안 ack 진전이 전혀 없으면(프론트 사망/웨지), reader는 읽기를 재개하고 oldest-drop + 기존 overflow 배너 경로로 폴백한다.
+3. **정지 밸브 R6 (reader 측)**: `FLOW_STALL_TIMEOUT`(10s) 동안 ack 진전이 전혀 없으면(프론트 사망/웨지), reader는 읽기를 재개하고 oldest-drop + 기존 overflow 배너 경로로 폴백한다.
+
+3a. **emitter 정지 안전밸브 (SPEC-PTY-FLOW-002 R8)**: reader 밸브 R6와 나란히, **emitter 게이트 자체에도** 독립 안전밸브가 있다. emitter가 정지 상태이고 ack이 `stall_timeout` 동안 무진전이면 밸브가 발화하여 회계를 리셋하고 방출을 재개한다(`flow_state.rs` `emitter_gate_decision`의 판정 규칙, `emitter_valve_fired` 카운터로 관측). 이 밸브는 **최종 방어선**이지 1차 해법이 아니다 — 단위가 어긋나도 10초마다 복구되어 결함이 "느린 팬"으로 위장될 수 있으므로, 발화가 관측되면 단위 회계 결함을 의심해야 한다. `TERMF_FLOW_STALL_TIMEOUT_MS` 환경변수로 타임아웃을 오버라이드할 수 있다(테스트·bench 주입용, 미설정 시 10s 불변).
 
 4. **parsedSeq 이원화 R10**: `receivedSeq`(이벤트 수신 시점 전진)와 `parsedSeq`(write 콜백에서 전진, **정본**)를 분리하여, `replay_pane(paneId, parsedSeq)`와 `snapshot.lastSeq`가 정본 seq를 사용하도록 한다.
 
@@ -108,6 +110,39 @@ VS Code는 문자(char) 기반 100KB/5KB 워터마크를 쓰지만, 본 프로�
 
 bench 재실행 시 `reader_parked false→true` 전이 관측(outstandingEndA ~814KiB > 768KiB), `flow_ok=true`, `oldest_drop_during_ack=0`. 135 tests green, clippy NEW 0.
 
+## SPEC-PTY-FLOW-002 개정 — ack 단위 불일치 결함과 그 해소
+
+### 결함 3: ack 단위 불일치로 인한 출력 영구 정지
+
+FLOW-001 시점의 프론트엔드는 `ack_output`에 **UTF-16 코드 유닛 수**를 산정해 보고했으나, 백엔드 emit 회계는 **UTF-8 바이트**였다. 한글 등 non-ASCII 출력에서 UTF-16 유닛 수 < UTF-8 바이트 수이므로 ack이 emit을 영원히 따라잡지 못했고, outstanding이 0으로 수렴하지 않아 emitter 게이트가 재개 조건(`≤ LOW 32KiB`)을 만족하지 못했다. 증상: 대량 non-ASCII 출력 후 해당 팬 출력이 영구 정지(전환 시 `reset_accounting`으로 일시 복구되는 것처럼 보여 결함을 은폐).
+
+**사각지대**: outstanding > 32KiB(게이트 잠금 지속)인데 ring 미방출분 < 768KiB면 reader park(R4)도 발동하지 않았다 — 두 밸브 사이의 간극에서는 어느 안전망도 결함을 잡지 못했다. 이 간극이 SPEC-PTY-FLOW-002의 발견 계기다.
+
+### 수정 (M1 — 단위 통일)
+
+- **백엔드 단일 원천**: `PtyOutputEvent.byteLen`(`output.rs` `byte_len`, 배너 포함 최종 문자열 기준)이 ack 수치의 유일한 원천.
+- **반사 ack**: `terms.ts`는 이벤트의 `byteLen`을 재산정 없이 그대로 ack 누적. `seq` 없는 배너·replay/스냅샷 데이터는 ack하지 않는다(`writeParsedNoAck` 경로, `ackBytes = 0`).
+- **재현-우선 회귀 테스트**: `flow_tests.rs` `flow002_ac2_utf16_unit_repro_permanent_pause`(RED → GREEN).
+
+### 수정 (M2 — emitter 정지 안전밸브)
+
+위 §핵심 아키텍처 3a의 emitter 밸브 + `TERMF_FLOW_STALL_TIMEOUT_MS` env 오버라이드 + `FlowStats`의 `valve_fired`/`emitter_valve_fired` 관측 필드(bench 표본 JSON 포함). 정상 경로에서는 `emitter_valve_fired == 0`이어야 한다(bench 판정).
+
+### 알려진 잔여 누수 (밸브로 흡수, 기명 부채)
+
+회계에서 ack이 누락될 수 있는 경로 2곳이 남아 있고, 둘 다 emitter 밸브가 10s 내 흡수한다(plan §B B11/B12 등록):
+
+- **(a) 마운트 해제된 pane의 early-return**: `pty-output` 핸들러가 해당 pane을 찾지 못하면 ack 없이 반환 — outstanding이 남지만 밸브가 리셋.
+- **(b) ack IPC 실패 삼킴**: 프론트의 `ack_output` invoke 실패가 로그만 남고 회계에는 반영 안 됨 — 동일하게 밸브가 흡수.
+
+이들은 데이터 유실을 일으키지 않는(emit이 이미 완료된 데이터의 회계만 어긋나는) 누수이며, 밸브가 최종 방어선으로 개입한다.
+
+### 검증 (SPEC-PTY-FLOW-002)
+
+- Rust: 148 tests green(단위 통일 + 밸브 발화/미발화/관측 + `flow002_*` 재현 테스트군), clippy NEW 0.
+- autotest: u8 flood 6판정(u8FloodAckProgress, u8FloodOutstandingBounded ≤ 512KiB, u8FloodTailRendered 등) + 기존 flow 5판정 전부 true.
+- bench: `flow_ok=true`, 전 표본 `emitter_valve_fired == 0`.
+
 ## 참조
 
 - **ADR-004** (유지 불변식): "느린 UI가 백엔드 메모리를 키울 수 없다" — reader는 여전히 UI 완료를 기다리며 블로킹되지 않는다. park 조건은 ring 점유량(백엔드 자체 상태)에만 의존한다.
@@ -116,6 +151,6 @@ bench 재실행 시 `reader_parked false→true` 전이 관측(outstandingEndA ~
 
 ---
 
-**버전**: 1.0.0  
-**날짜**: 2026-08-12  
-**SPEC**: SPEC-PTY-FLOW-001
+**버전**: 1.1.0 (SPEC-PTY-FLOW-002 개정: 회계 단위 명시 + emitter 안전밸브 + 잔여 누수 기명)  
+**날짜**: 2026-08-19 (초판 2026-08-12)  
+**SPEC**: SPEC-PTY-FLOW-001, SPEC-PTY-FLOW-002

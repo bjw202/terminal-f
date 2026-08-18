@@ -222,7 +222,25 @@ _run-phase 완료 — M1(단위 통일) + M2(안전밸브 + 종단 가드) 전 �
 
 ## §E.4 Sync-phase Audit-Ready Signal
 
-_<pending sync-phase>_
+```yaml
+sync_complete_at: 2026-08-19
+sync_commit_sha: pending-backfill-spec-pty-flow-002
+sync_status: completed
+ac15_status: PASS
+ac15_evidence: "ADR-014 v1.1.0 개정(회계 단위 명시 + emitter 밸브 + 잔여 누수 기명) + ARCHITECTURE.md §6 갱신(회계 단위·emitter 밸브) + DEVELOPMENT.md 모듈 지도 갱신(flow002_* 테스트·u8Flood 체크·TERMF_FLOW_STALL_TIMEOUT_MS·bench emitter_valve_fired) + CHANGELOG.md [Unreleased] Fixed 엔트리 — 파일 diff로 검증"
+docs_diff_summary: "docs/ADR-014-pty-flow-control.md / docs/ARCHITECTURE.md / docs/DEVELOPMENT.md / CHANGELOG.md 4종 갱신 + spec.md frontmatter status: completed (3-phase close)"
+frontmatter_status_transitions:
+  spec_md: "in-progress -> completed (single sync commit, 3-phase close)"
+changelog_entry_position: "[Unreleased] > ### Fixed (최상단)"
+canary_compliance_check:
+  changelog_duplicate_guard: "grep -c SPEC-PTY-FLOW-002 CHANGELOG.md == 1 (emission 후)"
+  ac_count_match: "논리 16건 (AC-1~AC-16, AC-10 sub-ID 6건 1건 계수) — CHANGELOG 엔트리와 일치"
+b12_self_test_a: "pre-emission grep count 0 → emission 허용"
+b12_self_test_b: "AC 수 16건 일치 (acceptance.md SSOT)"
+b12_self_test_c: "인용 파일 경로 전부 ls/grep으로 실재 확인 (output.rs byte_len, flow_state.rs emitter_valve_fired·TERMF_FLOW_STALL_TIMEOUT_MS, terms.ts byteLen 반사 ack, flow_tests.rs flow002_*, autotest.ts u8Flood*, bin/bench.rs)"
+```
+
+_sync 단계 완료 — AC-15 PASS. SPEC-PTY-FLOW-002 3-phase close (plan→run→sync)._
 
 ## §F Phase 4 Mode Selection
 

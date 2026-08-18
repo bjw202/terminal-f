@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **SPEC-PTY-FLOW-002**: ack 회계 단위 불일치(UTF-16 유닛 vs UTF-8 바이트)로 인한 non-ASCII 대량 출력 시 팬 출력 영구 정지 수정
+  - 회계 단위 통일(R2/R5): `PtyOutputEvent.byteLen`(배너 포함 UTF-8 바이트, 백엔드 단일 원천)을 프론트가 반사 ack — UTF-16 코드 유닛 재산정 금지 (`src-tauri/src/output.rs`, `src/terms.ts`)
+  - emitter 정지 안전밸브(R8): emitter 정지 + 10s 무ack 진전 시 회계 리셋·방출 재개 (`src-tauri/src/flow_state.rs`, `emitter_valve_fired` 카운터)
+  - `TERMF_FLOW_STALL_TIMEOUT_MS` 환경변수로 밸브 타임아웃 오버라이드(테스트·bench 주입용)
+  - `FlowStats`에 `valve_fired`/`emitter_valve_fired` 관측 필드 추가 (`flow_state.rs`, `src/types.ts`, `bin/bench.rs`)
+  - 비ASCII(u8) 홍수 autotest 체크 6판정 추가 (`src/autotest.ts`, `report.flowOk` 집계)
+  - **AC**: AC-1~AC-16 논리 16건 전부 PASS (cargo test 148 green, tsc exit 0, autotest ok·flowOk true, bench flow_ok=true·전 표본 emitter_valve_fired == 0)
+  - **테스트**: `flow_tests.rs` `flow002_*` 재현-우선 회귀 테스트군 (단위 불일치 영구 정지 재현 → GREEN)
+  - **문서**: ADR-014 v1.1.0 개정(회계 단위 명시 + emitter 밸브 + 잔여 누수 기명) + ARCHITECTURE.md §6 / DEVELOPMENT.md 갱신
+
 ### Added
 - **SPEC-PTY-FLOW-001**: PTY 출력 흐름 제어 (ack-watermark flow control) + 워크스페이스 전환 출력 유실 수정
   - 프론트엔드 방향 흐름 제어: ack 기반 워터마크 게이트(R3)로 백엔드 방출을 제어

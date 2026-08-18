@@ -44,8 +44,8 @@ rootDirRejectsMissing/rootDirCleared 포함). ADR-001~013.
 | `state.rs` | `AppState`(store/registry/config_path/injection_paused/automation), `WorkspaceStore`(CRUD, caps, trust), `resolve_inject_target`(라벨→pane, 중복 라벨 거부), `set_root_dir`(시작 폴더 설정/해제 + pane cwd 일괄 재작성, `set_color` 대칭 위치) |
 | `config.rs` | 디스크 로드/저장 + `migrate()`. **스키마 버전별 fixture 테스트가 여기 있음** |
 | `session.rs` | `SessionRegistry` + `PtySession`. reader 스레드, ring buffer 적재, spool 적재, idle 추적(`last_output_at`), bracketed-paste 모드 추적, `inject`(게이트 검사), `run_startup`(템플릿 시작 명령). **SPEC-PTY-FLOW-001**: reader park(R4), 정지 밸브(R6), 회계 리셋(R15), R8 teardown disarm |
-| `flow_state.rs` | **SPEC-PTY-FLOW-001**: 세션별 흐름 제어 상태 기계. ack 기반 워터마크(R3), reader park(R4/R5), 정지 밸브(R6), 회계 리셋(R15), flow_stats 관측 커맨드. `FlowState`/`FlowConfig` |
-| `output.rs` | 16ms 배치 emitter(pty-output/pty-exit 이벤트), ring buffer(1MiB/1024청크, oldest-drop, seq 부여). **SPEC-PTY-FLOW-001**: 워터마크 게이트(R3), R16 경합 방지(replay-pump 동일 ring 락), R1 emit 바이트 회계 |
+| `flow_state.rs` | **SPEC-PTY-FLOW-001**: 세션별 흐름 제어 상태 기계. ack 기반 워터마크(R3), reader park(R4/R5), 정지 밸브(R6), 회계 리셋(R15), flow_stats 관측 커맨드. `FlowState`/`FlowConfig`. **SPEC-PTY-FLOW-002**: emitter 정지 안전밸브(정지 + `stall_timeout` 무ack 진전 → 회계 리셋·재개, `emitter_valve_fired` 카운터, `TERMF_FLOW_STALL_TIMEOUT_MS` env 오버라이드), `FlowStats`에 `valve_fired`/`emitter_valve_fired` 필드. 회귀 테스트는 `flow_tests.rs` `flow002_*`(단위 불일치 재현 `flow002_ac2_utf16_unit_repro_permanent_pause`, 반사 ack 배수 `flow002_ac3_bytelen_ack_drains_outstanding_and_resumes` 등) |
+| `output.rs` | 16ms 배치 emitter(pty-output/pty-exit 이벤트), ring buffer(1MiB/1024청크, oldest-drop, seq 부여). **SPEC-PTY-FLOW-001**: 워터마크 게이트(R3), R16 경합 방지(replay-pump 동일 ring 락), R1 emit 바이트 회계. **SPEC-PTY-FLOW-002**: `PtyOutputEvent.byteLen`(배너 포함 UTF-8 바이트)이 ack 단일 원천 — 프론트 반사 ack 계약 |
 | `commands.rs` | 모든 `#[tauri::command]` + `do_inject` 공유 헬퍼 + `handle_pipe_method`(컨트롤 API 라우팅) + 자동화 폴링 진입점. `set_workspace_root`(파이프 경계에서 root_dir 제거), `pick_folder`(`rfd` 네이티브 폴더 대화상자, `#[tauri::command(async)]`) |
 | `automation.rs` | Rule/RuleSource(gitDiff·timer)/Proposal. **순수 로직**(`RuleRuntime::decide*`)과 부수효과 분리 → 단위테스트 용이 |
 | `audit.rs` | 주입 감사 로그(JSONL append/tail) |
@@ -53,7 +53,7 @@ rootDirRejectsMissing/rootDirCleared 포함). ADR-001~013.
 | `spool.rs` | pane 출력 관찰용 per-session 파일 spool(16MiB cap, byte offset 커서) |
 | `template.rs` | 템플릿 스키마/변수치환/검증/`build_tree`/`from_pane_tree` |
 | `paste.rs` | 클립보드 브리지: `read_clipboard`(arboard) + PNG 인코딩 + paste 파일 저장/prune |
-| `bin/bench.rs` | 처리량/지연 벤치마크(BENCHMARK.md) |
+| `bin/bench.rs` | 처리량/지연 벤치마크(BENCHMARK.md). **SPEC-PTY-FLOW-002**: 표본 JSON에 `emitter_valve_fired` 포함 — 정상 시나리오에서 전 표본 `== 0`이어야 함. 밸브 타임아웃 단축 주입은 `TERMF_FLOW_STALL_TIMEOUT_MS` env 사용 |
 
 ### 프론트엔드 `src/`
 
@@ -65,7 +65,7 @@ rootDirRejectsMissing/rootDirCleared 포함). ADR-001~013.
 | `types.ts` | 공유 타입. 백엔드 serde 모델과 camelCase로 1:1 대응 |
 | `renderer.ts` | pane 트리 → DOM(그리드) 렌더 + 리사이즈 핸들 |
 | `sidebar.ts` / `palette.ts` / `modal.ts` / `commands.ts` / `themes.ts` | 사이드바, 커맨드 팔레트, 프롬프트/목록 모달, 커맨드 레지스트리, 테마 |
-| `autotest.ts` | E2E 시나리오(아래 §4) |
+| `autotest.ts` | E2E 시나리오(아래 §4). **SPEC-PTY-FLOW-002**: u8 flood 체크 6판정(`u8FloodAckProgress`, `u8FloodOutstandingBounded` ≤ 512KiB, `u8FloodTailRendered` 등)이 `report.flowOk`에 집계 |
 
 ---
 

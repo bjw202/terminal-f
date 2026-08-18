@@ -2,9 +2,9 @@
 id: SPEC-PTY-FLOW-002
 title: "PTY 흐름 제어 ack 바이트 단위 불일치로 인한 출력 영구 정지 수정"
 version: "0.1.0"
-status: in-progress
+status: completed
 created: 2026-08-18
-updated: 2026-08-18
+updated: 2026-08-19
 author: manager-spec
 priority: P0
 phase: "v0.1.3 target"

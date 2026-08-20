@@ -65,15 +65,7 @@ The `sync-phase-quality-gate.sh` row above describes the Stop hook in the sync-p
 
 **Recovery-Signal Carve-Out** — anti-death-spiral policy guidance for Stop/PostToolUse hooks. The canonical doctrine lives at `.claude/rules/moai/workflow/runtime-recovery-doctrine.md` §4 (SSOT); this subsection is the render surface.
 
-[ZONE:Evolvable] **While** a turn's `stopReason` or surrounding context indicates the turn is itself a **recovery signal** — i.e., the turn is recovering from a sync failure, a compact, a `prompt_too_long` (PTL), a `max_output_tokens` exhaustion, or a `media_size` / `compact-failure` — Stop/PostToolUse hooks SHOULD exit 0 (allow the turn to end / the tool call to proceed) rather than exit 2 (block), so that recovery turns are NOT placed into the `error → stop-hook-blocks → retry → error` loop that book1 ch06 names the **death-spiral**.
-
-This carve-out is **policy guidance** (a SHOULD recommendation), NOT a mechanically-enforced gate:
-
-- The current `sync-phase-quality-gate.sh` (Stop) and `status-transition-ownership.sh` (PostToolUse) hooks receive PostToolUse/Stop JSON but do not parse a recovery signal from `stopReason` or turn context; they therefore cannot mechanically distinguish a recovery turn from a normal turn.
-- Mechanical enforcement of this carve-out is deferred to a future runtime-layer SPEC that would add `stopReason` parsing.
-- The carve-out does NOT weaken the hooks' gate function on non-recovery turns — the gates still exit 2 (block) on genuine gate failures during normal turns. The carve-out only says recovery turns SHOULD defer to the recovery.
-
-Determining "is this a recovery turn?" is the mechanical step the current hooks cannot take. See the SSOT doctrine (`runtime-recovery-doctrine.md` §4) for the full scope binding, the named-hook list (`sync-phase-quality-gate.sh`, `status-transition-ownership.sh`), and the reason this is documentation-only at this layer.
+[ZONE:Evolvable] **While** a turn's `stopReason` or surrounding context indicates the turn is itself a **recovery signal** (recovering from a sync failure, a compact, a `prompt_too_long` (PTL), a `max_output_tokens` exhaustion, or a `media_size` / `compact-failure`), Stop/PostToolUse hooks SHOULD exit 0 rather than exit 2, so recovery turns are NOT placed into the `error → stop-hook-blocks → retry → error` **death-spiral** loop. This is a SHOULD (policy guidance), not a mechanical gate — the current hooks do not parse `stopReason`, enforcement is deferred to a future runtime-layer SPEC, and the gates still block normally on non-recovery turns. Full scope binding and named-hook list: `runtime-recovery-doctrine.md` §4.
 
 ### Blocker Report Format
 
@@ -122,6 +114,7 @@ The **ledger-closure invariant** (externally grounded in `github.com/wquguru/har
 
 Output language rules:
 - Analysis, documentation, reports: User's conversation_language
+- Cross-session messages a human observes (a kanban dispatch the operator watches): User's conversation_language; identifiers, paths, commands, and flags stay verbatim. An `Agent()` subagent prompt reaches no human and stays English
 - Code examples and syntax: Always English
 - Code comments: Per code_comments setting in language.yaml (default: English)
 - Commit messages: Per git_commit_messages setting in language.yaml
@@ -186,11 +179,41 @@ Architecture:
 - Agents own domain-specific expertise
 - Skills auto-load based on YAML frontmatter configuration
 
+### Per-Spawn Model Injection
+
+[ZONE:Evolvable] [HARD] When spawning a subagent, pass the model the active
+profile resolves for that agent as an explicit `model` argument on the spawn.
+
+Omitting it is not neutral. Nearly every agent definition carries
+`model: inherit`, so a spawn without an explicit model silently runs the agent
+on the parent session's model rather than its profiled one. The profile is still
+computed — nothing reports that it was never applied, which is why this is worth
+stating where it is always read rather than leaving it to the detailed policy
+file that only loads while agent files are being edited.
+
+- Resolve the value with `moai model profile --json`, which reports the
+  `{model, effort}` cell for every retained agent under the active profile.
+- Pass `model` per spawn. `effort` has no spawn-time parameter — it travels
+  only through the agent file's frontmatter, so it cannot be injected this way.
+- A spawn whose declared model differs from the resolved one is drift, not an
+  override. Change the profile instead when a different model is genuinely
+  wanted.
+- Agents outside the retained catalog (user-authored harness specialists)
+  resolve to the inherit sentinel and take no injection.
+
+A PreToolUse hook observes every spawn and records the outcome to
+`.moai/logs/agent-model-audit.jsonl`. It advises but does not block; the
+blocking layer is opt-in via `workflow.agent_model_guard.enabled` and refuses
+only a declared-vs-resolved conflict.
+
+Full profile matrix, precedence order, and channel table:
+`.claude/rules/moai/development/model-policy.md`.
+
 ## Background Agent Execution
 
 [ZONE:Evolvable] [HARD] As of Claude Code v2.1.198, subagents run in the background by **default**; Claude runs one in the foreground only when it needs the result before continuing. The default changes *where* a subagent runs, not *what it may do* — a background subagent still surfaces every permission prompt in the main session, and (since v2.1.186) that prompt names the asking subagent (Esc denies just that one call). MoAI **aligns with this runtime default** rather than forcing foreground for write-capable agents, and does not set the `background:` frontmatter field — the runtime's per-call heuristic chooses.
 
-The retained safeguard is **concurrency, not backgrounding**: MoAI does not run two write-capable agents concurrently, and orchestrator work performed concurrently with a write-capable agent is **read-only**. This targets the actual hazard — a file-write race between agents — which forbidding background writes never addressed. The superseded restriction — a blanket ban on background Write/Edit — had its stated basis (background writes auto-denied) removed by v2.1.186 and no longer describes the runtime.
+The retained safeguard is **concurrency, not backgrounding**: MoAI does not run two write-capable agents concurrently, and orchestrator work performed concurrently with a write-capable agent is **read-only**. This binds specifically to the parallel write workers within a hierarchical team shape (e.g., `manager-kanban` fan-out) — the orchestrator (or `manager-kanban`) sequences write-capable leaf workers rather than running them concurrently, so a file-write race between agents is structurally prevented. This targets the actual hazard — a file-write race between agents — which forbidding background writes never addressed. The superseded restriction — a blanket ban on background Write/Edit — had its stated basis (background writes auto-denied) removed by v2.1.186 and no longer describes the runtime.
 
 Rules for agent spawning:
 - **Read-only tasks** (research, analysis, review): safe in the background; while one is in flight the orchestrator continues independent read-only work.
@@ -239,6 +262,8 @@ Avoid:
 | Create new file | Write | Bash echo/cat heredoc |
 | Run system commands | Bash | — |
 | Explore codebase | Agent(Explore) | Multiple sequential Grep calls |
+
+**MCP-over-CLI preference**: where an `mcp__moai__*` tool exists for a capability already in the agent's `tools:` list (e.g. `mcp__moai__spec_audit`, `mcp__moai__verify_snapshot`, `mcp__moai__session_list`), the agent SHOULD prefer the MCP tool over the equivalent Bash CLI (`moai spec audit`, `moai verify check`, `moai session list`). Both back the same implementation; the MCP path returns structured output, avoids shell-quoting hazards, and is lower-latency inside a subagent where Bash may be restricted. Use the Bash CLI only when the MCP tool is absent or the capability is not in the agent's `tools:` list. Full tool catalogue + consumers: `.claude/rules/moai/core/moai-mcp-tools.md`.
 
 ### Bash Timeout
 
@@ -297,79 +322,50 @@ When the orchestrator needs to verify implementation completion, it SHOULD issue
 multiple Bash tool calls within a single response turn. Independent verifications
 that do not share state are safe to parallelize.
 
-### Canonical 7-item example
+### Verbatim batch, output contracts, and CLI idioms
 
-The following 7 verification commands cover the standard read-only verification
-batch for a typical run-phase completion. The orchestrator SHOULD invoke all 7
-in parallel within a single response turn:
+The canonical 7-command batch, the file-redirect contract, the evidence-persistence
+obligation, the serial-verification anti-pattern, and the single-command CLI idiom
+catalogue (`gh pr checks --json … | jq`, `gh pr checks --watch --fail-fast` run in
+background mode, `git log --format=…`, the per-turn `ToolSearch` preload) all live in
+`agent-common-protocol-reference.md`. Read it when composing a batch.
 
-```bash
-# 1. Full test suite (Go)
-go test ./... > /tmp/moai-verify/1-go-test.log 2>&1; echo "exit=$?"; tail -50 /tmp/moai-verify/1-go-test.log
+Three obligations from that file bind here and are restated so they hold without it:
 
-# 2. Coverage report (per-package)
-go test -coverprofile=cover.out ./internal/<pkg>/... > /tmp/moai-verify/2-cover.log 2>&1; echo "exit=$?"; tail -50 /tmp/moai-verify/2-cover.log
+- **Batch in one turn.** Independent read-only verifications are issued as separate
+  Bash tool calls within a single assistant turn — never serialized across turns.
+  Serialize only for genuine dependencies: one command's output feeding another,
+  writes to the same path, or shared-state mutation.
+- **File-redirect contract.** When a command's verbatim output exceeds the bounded-tail
+  ceiling (default: 50 lines or 2KB, whichever is smaller), redirect it to a file and
+  surface only the exit code plus a bounded tail. Below the ceiling, inline quotation
+  is fine. The contract removes the double-burn of quoting output twice, never the
+  evidence itself.
+- **Evidence persistence.** The cited path must still resolve at audit time, so
+  evidence is persisted under `.moai/state/verify/<session>/` rather than left in
+  `/tmp`, which the OS clears. A claim whose cited evidence path no longer resolves
+  is an unattributed claim (`verification-claim-integrity.md` §2).
 
-# 3. Subagent-boundary grep (sentinel C-HRA-008)
-grep -rn 'AskUserQuestion\|mcp__askuser' internal/harness/ internal/hook/ | grep -v "_test.go" | grep -v "^[^:]*:[0-9]*:[ \t]*//" > /tmp/moai-verify/3-boundary.log 2>&1; echo "exit=$?"; tail -50 /tmp/moai-verify/3-boundary.log
+### Attributable diff-check doctrinal switch (SPEC-SYNC-PARALLEL-DOCS-001 A9)
 
-# 4. Sentinel key audit (build-tag, retired SPEC, etc.)
-grep -rn 'FROZEN_SENTINEL\|HARNESS_FROZEN' internal/ | head -20 > /tmp/moai-verify/4-sentinel.log 2>&1; echo "exit=$?"; tail -50 /tmp/moai-verify/4-sentinel.log
+The canonical 7-command batch CONSUMES the attributable §E evidence by default (no re-execution) when the three-way attribution match holds; on any mismatch, the batch falls back to re-execution (the fallback-to-re-execution contract is preserved unchanged). SPEC-SYNC-PARALLEL-DOCS-001 A9 introduces this default-inversion switch in how the orchestrator COMPOSES that batch: the orchestrator SHALL first consult the shared diagnostic snapshot via `moai verify check --key-current` (the live snapshot surface wired at `.claude/skills/moai/workflows/sync/quality-gates-quality.md` Step 0.5.2, keyed by HEAD SHA) and, on all-three attribution match, consume the §E evidence INSTEAD of re-executing. This is a composition-time doctrinal switch — there is NO mechanical "about to re-run command X" preamble token to intercept (the batch is orchestrator-composed single-turn multi-Bash; re-execution is implicit Bash). The switch binds the orchestrator's batch-composition discipline, not a runtime hook.
 
-# 5. CLI smoke check (cmd/moai)
-go run ./cmd/moai --version > /tmp/moai-verify/5-cli.log 2>&1; echo "exit=$?"; tail -50 /tmp/moai-verify/5-cli.log
+**All-three attribution match → CONSUMES the attributable §E evidence (no re-execution) [DEFAULT].** When ALL THREE of the following hold for a verification dimension, the orchestrator SHALL consume the attributable §E evidence (`.claude/rules/moai/development/manager-develop-prompt-template.md` § Section E → attribution discipline clause) for that dimension INSTEAD of re-executing the corresponding command:
+1. **Snapshot key match** — the §E-cited HEAD SHA equals the current `moai verify check --key-current` snapshot key (no commit landed between §E recording and orchestrator batch);
+2. **Command match** — the §E-cited command (a) matches the snapshot's recorded command for that dimension;
+3. **Output match** — the §E-cited observed output (b) matches the snapshot's recorded output for that dimension.
 
-# 6. Benchmark micro-suite (optional)
-go test -bench=. -benchmem -run=^$ ./internal/<pkg>/... > /tmp/moai-verify/6-bench.log 2>&1; echo "exit=$?"; tail -50 /tmp/moai-verify/6-bench.log
+On all-three match (the default path), the batch records the snapshot key + cited §E evidence path as its baseline-attribution per VCI §2 and DOES NOT re-execute the corresponding command (test / lint / vet / cover). The verification dimension is marked PASS-attributed, not PASS-reexecuted — both satisfy VCI §1.1, but the attribution path is faster and the re-execution path is stronger.
 
-# 7. Lint baseline (golangci-lint)
-golangci-lint run --timeout=2m > /tmp/moai-verify/7-lint.log 2>&1; echo "exit=$?"; tail -50 /tmp/moai-verify/7-lint.log
-```
+**Any mismatch → fallback to re-execution (SPEC-SYNC-PARALLEL-DOCS-001 A9 fallback contract).** On ANY of the mismatch conditions below, the batch SHALL fall back to re-execution of the affected verification dimension — any-mismatch → re-execute, never silent skip:
 
-In Claude's response, all 7 commands are invoked as separate Bash tool calls
-within the same assistant turn. The orchestrator does NOT issue them serially
-across multiple turns.
+- `snapshot_key_drift` — HEAD SHA changed since §E recording (the §E-cited SHA ≠ current `moai verify check --key-current` key);
+- `command_drift` — the §E-cited command does not match the snapshot's recorded command for that dimension;
+- `missing_section_e` — §E evidence missing or citing no observable output;
+- `output_drift` — the §E-cited observed output does not match the snapshot's recorded output.
 
-### File-redirect contract
+The fallback is logged with the mismatch reason. The batch NEVER silently skips verification — the VCI §1.1 invariant holds on every path. The full attributable diff-check pattern + fallback-to-re-execution contract lives in `.claude/rules/moai/workflow/verification-batch-pattern.md` § Attributable diff-check pattern.
 
-The canonical batch above also demonstrates the **file-redirect contract**: when a verification command's verbatim output exceeds the **bounded-tail ceiling** (concrete default: **≤50 lines OR ≤2KB, whichever is smaller**), the orchestrator redirects the verbatim output to a file on disk and surfaces only **exit code + bounded-tail summary** in conversation context. Each command above shows the redirected form (`> /tmp/moai-verify/<N>-<slug>.log 2>&1; echo "exit=$?"; tail -50 …`).
-
-This contract governs *how* verification output is represented in context, NOT *whether* the commands run in parallel — the single-turn multi-Bash HARD obligation above is unchanged. The cited file path MUST appear in the Verification Matrix / Completion Report banner (`.claude/output-styles/moai/moai.md` §8) or in the manager-agent `§E` self-verification block, so the verbatim evidence remains reachable at audit time. This preserves `.claude/rules/moai/core/verification-claim-integrity.md` §1.1 **surface 1** (orchestrator self-report) and **surface 2** (manager-agent `§E` self-verification): every claim row remains attributable to a directly-observed command whose verbatim output is reachable at the cited file path.
-
-The contract is **"verbatim evidence lives on disk with a citable path; context carries exit code + bounded tail"** — NOT **"drop the evidence"**. Inline quotation is PERMITTED when verbatim output is below the ceiling (the redirect obligation triggers only on exceedance); the diet removes the *double-burn* (Bash inline output + banner re-quote), not the evidence itself. The exact ceiling value and directory scheme are tunable per-domain; the contract holds regardless of the specific numbers.
-
-### Evidence persistence obligation
-
-The cited evidence path MUST remain reachable at audit time, including after `/tmp` directory clearance. `/tmp` is OS-cleared periodically (macOS reboot, Linux tmpfs re-mount, systemd-tmpfiles); a cited path that no longer resolves to a file violates `verification-claim-integrity.md` §1.1 surface 1 (orchestrator self-report) and surface 2 (manager-agent §E self-verification) — every claim row MUST remain attributable to a directly-observed command whose verbatim output is reachable at the cited file path.
-
-To satisfy this reachability obligation, evidence SHALL be persisted under `.moai/state/verify/<session>/` (gitignored runtime state, same directory family as `context-usage.json` and `active-sessions.json`). The exact persist mechanism — direct write to `.moai/state/verify/<session>/`, or `/tmp` write followed by a copy step — is a run-phase implementation detail; the contract states the OBLIGATION (evidence survives `/tmp` clearance), not the mechanism. **"Persist evidence" ≠ "drop evidence"**: the diet removes the *double-burn* (inline output + banner re-quote), NOT the evidence itself. The verbatim output MUST remain on disk at a citable, audit-time-reachable path.
-
-### Anti-pattern: serial verification across turns
-
-```
-Turn 1: go test ./...     → wait for completion → Turn 1 ends
-Turn 2: golangci-lint ... → wait for completion → Turn 2 ends
-Turn 3: grep -rn ...      → wait for completion → Turn 3 ends
-```
-
-This pattern locks the orchestrator into N sequential turns where 1 turn would
-suffice. Each turn adds round-trip latency. For 7 verifications averaging 2 s
-each, serial execution adds ~14 s of dead-time per run-phase completion.
-
-### When to use serial execution
-
-- Commands that depend on each other (e.g., `make build` before `go test ./...`)
-- Commands that write to the same file or directory
-- Commands that mutate shared state (filesystem, env vars)
-
-### Cross-reference
-
-- The canonical verification-batch acceptance criterion (recorded in the
-  predecessor workflow optimization rule) verifies this section contains the
-  7 verification keywords (`go test`, `coverprofile`, `grep `, `sentinel`,
-  `cmd/moai`, `bench`, `lint`).
-- `.claude/rules/moai/workflow/verification-batch-pattern.md` documents the
-  formal verification grouping pattern.
 
 ### Pre-Spawn Sync Check (Multi-Session Race Mitigation)
 
@@ -430,56 +426,54 @@ commit in the push range. Lesson (parallel-session race during long agent runs) 
 
 Exemption: read-only agents (`Explore`, or a per-spawn `Agent(general-purpose)` scoped to read-only investigation) do not require pre-spawn fetch — they cannot trigger race conflicts.
 
+> **Spawn-gate boundary**: this check fires only at the write-agent spawn boundary. Direct main-session edits (Edit/Write/Bash) bypass this gate; see § Pre-Edit Sync Check (Direct-Edit Race Mitigation) below for the direct-edit counterpart.
+
 Cross-reference: `.moai/docs/generic-patterns-guide.md` § Multi-Session
 Race Mitigation Procedure (defense-in-depth policy at user-facing
 layer); `.claude/rules/moai/workflow/session-handoff.md` § Worktree-Anchored
 Resume Pattern (L2/L3 worktree as race-elimination alternative).
 
-## Tool Optimization Patterns
+### Pre-Edit Sync Check (Direct-Edit Race Mitigation)
 
-[ZONE:Evolvable] [HARD] Agents MUST use single-command idioms over multi-step
-shell pipelines when a CLI tool provides structured output (JSON). The
-canonical patterns below replace the prose alternatives that previously
-expanded into multiple sequential commands.
+[ZONE:Evolvable] [HARD] The Pre-Spawn Sync Check above binds only the spawn boundary. **Direct main-session edits to shared working-tree paths (Edit/Write/Bash in the orchestrator session — the MoAI-Easy hands-on style and any direct edit) bypass the spawn gate**, so a foreign active session goes undetected while the orchestrator's uncommitted work sits in a tree that every concurrent session can mutate. To close that gap, the orchestrator MUST run the parallel-session detection **before a non-trivial direct edit** to shared paths, not only before a write-agent spawn.
 
-### CI Status Query
+The incident record (the multi-session shared-checkout loss that made this rule binding), the failure analysis of the previous version, and the enforcement-placement assessment live in `agent-common-protocol-reference.md` § Pre-Edit Sync Check — rationale and enforcement record. Inline here: the binding gate (below) and the sweep prohibition — the moment-of-edit gate an agent can actually run, plus the commit-side primitive that does the damage.
 
+#### The rule, at the moment of the edit
+
+**TRIGGER** — the gate fires when ALL three hold:
+
+| Condition | Test |
+|---|---|
+| Tool | an `Edit`, `Write`, or file-mutating `Bash` call |
+| Target | a shared path another session could also mutate: `.claude/`, `.moai/`, `internal/`, `pkg/`, `cmd/`, or repo-root config files |
+| Location | CWD is the primary checkout. Exempt: an already-isolated worktree, `/tmp`, or a session-private scratch dir |
+
+**CHECK** — before the FIRST triggered edit of a task, as one parallel batch:
 ```bash
-# Canonical pattern — single command, structured JSON output.
-gh pr checks <PR> --json name,state,conclusion | jq '.[] | select(.conclusion != "SUCCESS")'
-
-# Why: single round-trip, parseable, easier to integrate with subsequent steps.
-# Avoid: gh pr checks <PR> | grep -E 'FAIL|PENDING'  (string parsing, brittle)
+# 1. live foreign sessions (own session filtered out; then liveness-probe each PID)
+moai session list --json | jq '[.[] | select(.cwd == "<project-root>" and .session_id != "<own>")] | length'
+# 2. divergence vs origin/main
+git fetch origin main 2>&1; git rev-list --count --left-right origin/main...HEAD
 ```
 
-### Recent Commit Inspection
+**DECIDE and ACT** — no outcome permits "proceed in the shared checkout anyway":
 
-```bash
-# Canonical pattern — single command, structured.
-git log --format='%h %s %ci' -10 | head -10
+| Probe result | Required action |
+|---|---|
+| 0 live foreign sessions AND `0 0` / `0 N` | Proceed in the shared checkout |
+| ≥1 live foreign session | **ISOLATE before editing**: `moai cc -w <name>` / `EnterWorktree(<path>)` / `Agent(isolation: "worktree")`. If isolation is impossible, surface via `AskUserQuestion` (isolate / wait / abort) |
+| `N 0` / `N M` divergence | STOP; `AskUserQuestion` (rebase / inspect / abort) per the Pre-Spawn Sync Check matrix |
 
-# Why: built-in format string avoids multi-step git log | awk pipelines.
-# Avoid: git log --pretty=oneline | awk '{print $1}' | xargs git show
-```
+> **Stale-registry caveat**: registry entries can hold dead PIDs (the registry is not a reliable emptiness signal). Probe each foreign entry's liveness with `kill -0 <pid>`; ignore confirmed-dead, treat indeterminate as live and isolate anyway. ANY live-or-indeterminate foreign entry ⇒ isolate (`worktree-integration.md` § Parallel-Session Branch Conflict Auto-Isolation).
 
-### ToolSearch Per-Turn Preload
+**RE-CHECK** — the probe decays. Re-run it before ANY commit in the shared checkout, and after any long pause in the task (a session that starts mid-task is invisible to a task-start probe).
 
-```
-ToolSearch(query: "select:AskUserQuestion,TaskCreate,TaskUpdate,TaskList,TaskGet", max_results: 5)
-```
+#### The sweep prohibition
 
-This canonical preload SHOULD be invoked at the start of every orchestrator
-turn where deferred tools may be needed. See
-`.claude/rules/moai/core/askuser-protocol.md` for the full preload contract.
+[ZONE:Evolvable] [HARD] In the primary checkout, NEVER `git add -A`, `git add .`, or `git commit -a`. Stage by explicit pathspec (`git add <path> …`), and re-read `git status --short` immediately before staging so another session's files are visible and excluded. This binds the actual destruction primitive from the incident record; it is the commit-side half of this rule and applies **even when the pre-edit probe found no foreign session** — a session can arrive after the probe, and the sweep is what turns its presence into lost work.
 
-### Cross-reference
-
-- The canonical CI-status-query acceptance criterion (recorded in the
-  predecessor workflow optimization rule) verifies this section contains
-  `gh pr checks --json` and `jq` literals in proximity.
-- `.claude/rules/moai/workflow/cache-aware-execution.md` — prompt-cache-aware
-  ordering (stagger-spawn for parallel same-type agents, gate placement,
-  session-loaded file edit timing).
+**Ambient signal.** The SessionStart hook already lists foreign active sessions via a `<system-reminder>` (`internal/hook/session_start.go` Step 3) — that is the always-on detection layer; this Pre-Edit Sync Check is the decision layer that turns detection into isolation.
 
 ## Time Estimation
 

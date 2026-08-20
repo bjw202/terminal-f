@@ -2,7 +2,6 @@
 # MoAI-ADK Package Distribution .gitignore
 # ============================================
 # Version: 0.33.0
-# Updated: 2026-01-10
 # Purpose: Essential patterns for user projects
 # ============================================
 
@@ -204,14 +203,6 @@ secret-*.*
 .moai/state/
 .moai/cache/
 
-# The two patterns above contain a mid-path slash, so git anchors them to the
-# repo root and they do NOT match a nested copy. The moai statusline resolves
-# its project root from the current working directory, so running a command
-# from a subdirectory makes it write <subdir>/.moai/state/context-usage.json.
-# These non-anchored patterns keep such strays out of git wherever they appear.
-**/.moai/state/
-**/.moai/cache/
-
 # ===========================================
 # Plan Audit Reports (local artifacts)
 # Plan-audit verdict reports are local artifacts; only .gitkeep is tracked.
@@ -248,9 +239,10 @@ dist-ssr/
 .vercel/
 .netlify/
 .firebase/
-# ===========================================
-# terminal-f project-specific (Tauri) — MoAI 템플릿 교체로 소실된 규칙 복원
-# ===========================================
+
+# User Custom Patterns (preserved by moai update)
+**/.moai/state/
+**/.moai/cache/
 src-tauri/target/
 src-tauri/gen/
 autotest-report.json

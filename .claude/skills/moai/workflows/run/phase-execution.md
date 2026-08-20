@@ -20,27 +20,36 @@ Source: the plan audit gate contract.
 
 ### Step 1: Compute Plan Artifact Hash (Cache Key)
 
-Compute a combined SHA-256 hash of all plan artifacts present in `.moai/specs/<SPEC-ID>/`:
-- `spec.md` (required)
-- `plan.md` (if present)
-- `acceptance.md` (if present)
-- `tasks.md` (if present)
+Compute a combined SHA-256 hash of all plan artifacts present in `.moai/specs/<SPEC-ID>/`.
+The hash subject set and tier-conditional inclusion are owned by the canonical
+contract in `.claude/rules/moai/workflow/spec-workflow.md` § Report Persistence
+("Plan-artifact hash subject list (Go verbatim)"); consult that contract for the
+authoritative subject list rather than restating it here. The Go implementation
+is `internal/runtime/audit_cache.go` `ComputeHash`, which hashes the
+whitespace-normalized UTF-8 content of each present subject file (missing files
+are skipped, making inclusion tier-conditional by construction).
 
-Hash algorithm: SHA-256 of the UTF-8 content of each file, sorted by filename, concatenated.
-Whitespace normalization: collapse all runs of whitespace to a single space before hashing (whitespace-insensitive cache).
 Store hash as `plan_artifact_hash` for Step 2 cache lookup.
 
-### Step 2: Check 24-Hour Audit Cache
+### Step 2: Consult the Sticky (Hash-Keyed) Audit Cache
 
-Read `.moai/reports/plan-audit/<SPEC-ID>-<YYYY-MM-DD>.md` (today's date).
+The cache is **sticky (hash-keyed)**: a cached PASS verdict whose
+`plan_artifact_hash` matches the current hash is valid regardless of elapsed
+time. SPEC-AUDIT-SNAPSHOT-001 (A1) retired the prior 24h age condition; the
+single authoritative skip contract (the three conditions: verdict PASS, score
+≥ per-tier threshold, artifact-hash unchanged) lives in
+`.claude/rules/moai/workflow/spec-workflow.md` § Phase Transitions / Plan Audit
+Gate skip policy. This step CITES that contract — it MUST NOT restate a
+divergent condition set.
 
-Cache HIT conditions (all must be true):
-1. File exists and the most recent audit run entry has `verdict: PASS`
-2. `plan_artifact_hash` in the cached entry matches `plan_artifact_hash` from Step 1
-3. `audit_at` timestamp in the cached entry is within 24 hours of now (UTC)
+Read `.moai/reports/plan-audit/<SPEC-ID>-<YYYY-MM-DD>.md` (today's date) and
+apply the canonical three-condition skip predicate. The Go helper
+`internal/runtime.SkipEligibleByScore(tier, score)` codifies condition 2
+(per-tier PASS threshold: S 0.75 / M 0.80 / L 0.85; the retired flat `≥ 0.90`
+predicate is NOT consulted).
 
-If cache HIT:
-- Log: `[plan-audit] cache hit (verdict=PASS, age=<Nh>)`
+If cache HIT (all three canonical conditions hold):
+- Log: `[plan-audit] cache hit (verdict=PASS, sticky)`
 - Append to `.moai/specs/<SPEC-ID>/progress.md`: `- audit_cache_hit: true` and `- cached_audit_at: <T0>`
 - Skip Step 3 and proceed to Phase 1.
 
@@ -245,6 +254,12 @@ Detection Steps:
 
 This phase auto-selects and does NOT require user approval. The user can override with the --solo flag (a forced --team is retired → emits `MODE_TEAM_UNAVAILABLE` and falls back to sub-agent mode).
 
+### Operational Entries (Mode 4 / Mode 6)
+
+**Mode 4 (parallel) — research fan-out**: while pre-implementation work is research-heavy and multi-domain, the orchestrator spawns 3-5 concurrent read-only `Agent()` calls in a single turn for analysis fan-out (codebase exploration, external research, quality baseline). Implementation itself remains Mode 5 (sequential sub-agent) per the Anthropic coding-task parallelism caveat.
+
+**Mode 6 (workflow) — launch procedure**: candidate ONLY when the `orchestration-mode-selection.md` §C.3 capability gate holds — Implementation Kickoff Approval passed + all preferences collected + scope ≥ ~30 files with one uniform mechanical transform and no inter-file dependency + runtime ≥ v2.1.154 with workflows not disabled. Launch procedure: (1) verify each §C.3 precondition; (2) record the Mode 6 selection + gate confirmations in `progress.md` §F Phase 4 Mode Selection BEFORE launch; (3) launch the workflow fan-out from the orchestrator (scaling, not nesting); (4) workflow agents return blocker reports and never prompt the user — every needed decision is drained at Implementation Kickoff Approval first.
+
 ## Phase 5: Analysis and Planning
 
 Agent: manager-spec subagent (planning IS strategy per `.claude/rules/moai/workflow/archived-agent-rejection.md` §C row 1)
@@ -393,6 +408,8 @@ Purpose: Scan files that will be modified during implementation to build an MX c
 - file_path: list of tags with type, line, description, and constraints
 
 **Skip Condition:** If target files do not exist (greenfield implementation), skip this phase.
+
+**Sharding (`FO-RUN-1`, read-only):** **Where** the scan target spans many files across several packages, the orchestrator shall shard the scan — one read-only `Agent()` per package shard in a single turn, 3-5 concurrent per the Mode 4 ceiling (`.claude/rules/moai/workflow/orchestration-mode-selection.md` §C.2). Each shard returns its slice of the context map as text and writes no file; the orchestrator merges the slices into the single map above. A shard that cannot read a target records the gap and returns a structured blocker report (`.claude/rules/moai/core/agent-common-protocol.md` § Blocker Report Format) rather than prompting the user. The orchestrator launches the shards itself — scaling, not subagent nesting. **Where** the target set is small or sharding is skipped, the scan runs as one pass with identical output.
 
 See .claude/rules/moai/workflow/mx-tag-protocol.md for tag type definitions.
 

@@ -1,204 +1,30 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "attribution": {
+    "commit": "🗿 MoAI",
+    "pr": "🗿 MoAI",
+    "sessionUrl": false
+  },
+  "cleanupPeriodDays": 30,
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_NO_FLICKER": "1",
+    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
+    "ENABLE_TOOL_SEARCH": "1",
+    "MOAI_CONFIG_SOURCE": "sections",
+    "PATH": "C:\\Users\\user-pc\\.local\\bin;C:\\Users\\user-pc\\go\\bin;/usr/local/bin;/usr/local/sbin;/usr/bin;/bin;/usr/sbin;/sbin"
+  },
   "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "startup|resume|clear|compact",
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-session-start.sh\"",
-            "timeout": 30,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "manual|auto",
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-compact.sh\"",
-            "timeout": 30,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-session-end.sh\"",
-            "timeout": 10,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-pre-tool.sh\"",
-            "timeout": 5,
-            "type": "command"
-          }
-        ],
-        "matcher": "Write|Edit|Bash"
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-post-tool.sh\"",
-            "timeout": 10,
-            "type": "command",
-            "async": true
-          },
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/status-transition-ownership.sh\"",
-            "timeout": 5,
-            "type": "command"
-          }
-        ],
-        "matcher": "Write|Edit|MultiEdit"
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-stop.sh\"",
-            "timeout": 5,
-            "type": "command"
-          },
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/sync-phase-quality-gate.sh\"",
-            "timeout": 60,
-            "type": "command"
-          },
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-stop-goal.sh\"",
-            "timeout": 120,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-subagent-stop.sh\"",
-            "timeout": 5,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-post-tool-failure.sh\"",
-            "timeout": 5,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-subagent-start.sh\"",
-            "timeout": 5,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-user-prompt-submit.sh\"",
-            "timeout": 5,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "TeammateIdle": [
-      {
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-teammate-idle.sh\"",
-            "timeout": 60,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "TaskCompleted": [
-      {
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-task-completed.sh\"",
-            "timeout": 60,
-            "type": "command"
-          }
-        ]
-      }
-    ],
     "ConfigChange": [
       {
-        "matcher": "project_settings|local_settings|skills",
         "hooks": [
           {
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-config-change.sh\"",
             "timeout": 5,
             "type": "command"
           }
-        ]
-      }
-    ],
-    "StopFailure": [
-      {
-        "matcher": "rate_limit|authentication_failed|billing_error|max_output_tokens",
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-stop-failure.sh\"",
-            "timeout": 5,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "PostCompact": [
-      {
-        "matcher": "manual|auto",
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-post-compact.sh\"",
-            "timeout": 5,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "InstructionsLoaded": [
-      {
-        "hooks": [
-          {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-instructions-loaded.sh\"",
-            "timeout": 5,
-            "type": "command",
-            "async": true
-          }
-        ]
+        ],
+        "matcher": "project_settings|local_settings|skills"
       }
     ],
     "CwdChanged": [
@@ -224,6 +50,18 @@
         "matcher": ".env|.envrc|.gitignore"
       }
     ],
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-instructions-loaded.sh\"",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
     "PermissionDenied": [
       {
         "hooks": [
@@ -245,27 +83,188 @@
           }
         ]
       }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-post-compact.sh\"",
+            "timeout": 5,
+            "type": "command"
+          }
+        ],
+        "matcher": "manual|auto"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-post-tool.sh\"",
+            "timeout": 10,
+            "type": "command"
+          },
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/status-transition-ownership.sh\"",
+            "timeout": 5,
+            "type": "command"
+          }
+        ],
+        "matcher": "Write|Edit|MultiEdit"
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-post-tool-failure.sh\"",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-compact.sh\"",
+            "timeout": 30,
+            "type": "command"
+          }
+        ],
+        "matcher": "manual|auto"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-pre-tool.sh\"",
+            "timeout": 5,
+            "type": "command"
+          }
+        ],
+        "matcher": "Write|Edit|Bash"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-session-end.sh\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-session-start.sh\"",
+            "timeout": 30,
+            "type": "command"
+          }
+        ],
+        "matcher": "startup|resume|clear|compact"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-stop.sh\"",
+            "timeout": 5,
+            "type": "command"
+          },
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/sync-phase-quality-gate.sh\"",
+            "timeout": 60,
+            "type": "command"
+          },
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-stop-goal.sh\"",
+            "timeout": 120,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-stop-failure.sh\"",
+            "timeout": 5,
+            "type": "command"
+          }
+        ],
+        "matcher": "rate_limit|authentication_failed|billing_error|max_output_tokens"
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-subagent-start.sh\"",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-subagent-stop.sh\"",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-task-completed.sh\"",
+            "timeout": 60,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-teammate-idle.sh\"",
+            "timeout": 60,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/moai/handle-user-prompt-submit.sh\"",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
     ]
   },
-  "statusLine": {
-    "type": "command",
-    "command": "bash \"$CLAUDE_PROJECT_DIR/.moai/status_line.sh\"",
-    "refreshInterval": 10
-  },
-  "skillListingBudgetFraction": 0.02,
-  "showThinkingSummaries": false,
-  "cleanupPeriodDays": 30,
+  "includeGitInstructions": true,
+  "model": "sonnet",
   "outputStyle": "MoAI-Easy",
-  "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "ENABLE_TOOL_SEARCH": "1",
-    "MOAI_CONFIG_SOURCE": "sections",
-    "CLAUDE_CODE_NO_FLICKER": "1",
-    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
-    "PATH": "C:\\Users\\user-pc\\.local\\bin;C:\\Users\\user-pc\\go\\bin;/usr/local/bin;/usr/local/sbin;/usr/bin;/bin;/usr/sbin;/sbin"
-  },
   "permissions": {
-    "defaultMode": "acceptEdits",
     "allow": [
       "AskUserQuestion",
       "BashOutput",
@@ -390,6 +389,7 @@
       "Read(./.env)",
       "Read(./.env.*)"
     ],
+    "defaultMode": "acceptEdits",
     "deny": [
       "Read(./secrets/**)",
       "Read(~/.ssh/**)",
@@ -441,12 +441,13 @@
       "Bash(mysql -e DROP:*)"
     ]
   },
-  "attribution": {
-    "commit": "🗿 MoAI",
-    "pr": "🗿 MoAI",
-    "sessionUrl": false
-  },
+  "plansDirectory": ".moai/plans",
   "respectGitignore": true,
-  "includeGitInstructions": true,
-  "plansDirectory": ".moai/plans"
+  "showThinkingSummaries": false,
+  "skillListingBudgetFraction": 0.02,
+  "statusLine": {
+    "command": "bash \"$CLAUDE_PROJECT_DIR/.moai/status_line.sh\"",
+    "refreshInterval": 10,
+    "type": "command"
+  }
 }

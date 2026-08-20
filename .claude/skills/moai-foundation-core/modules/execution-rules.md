@@ -2,7 +2,6 @@
 
 Purpose: Security policies, execution constraints, and Git workflow strategies governing MoAI-ADK agent behavior.
 
-Last Updated: 2025-11-25
 Version: 2.0.0
 
 ---
@@ -170,7 +169,7 @@ MCP Server Permissions:
 
 ### Git Strategy 3-Mode System
 
-MoAI automatically adjusts Git workflow based on `config.json` settings.
+MoAI automatically adjusts Git workflow based on `.moai/config/sections/git-strategy.yaml` settings.
 
 Key Configuration Fields:
 - `git_strategy.mode`: Git mode selection (manual, personal, team)
@@ -267,7 +266,7 @@ Configuration (auto after approval):
 
 MoAI's Behavior (prompt_always=false, auto_enabled=false):
 1. When running `/moai plan`, user prompted once: "Enable automatic branch creation?"
- - Yes → Auto updates config.json with `auto_enabled=true` → Creates feature/SPEC
+ - Yes → Auto updates `.moai/config/sections/git-strategy.yaml` with `auto_enabled=true` → Creates feature/SPEC
  - No → Works on current branch, no config change
 2. From next SPEC: If `auto_enabled=true`, feature branches created automatically without prompts
 
@@ -332,7 +331,7 @@ Configuration (auto after approval):
 
 MoAI's Behavior (prompt_always=false, auto_enabled=false):
 1. When running `/moai plan`, user prompted once: "Enable automatic branch creation and Draft PR creation?"
- - Yes → Auto updates config.json with `auto_enabled=true` → Creates feature/SPEC + Draft PR
+ - Yes → Auto updates `.moai/config/sections/git-strategy.yaml` with `auto_enabled=true` → Creates feature/SPEC + Draft PR
  - No → Works on current branch, no config change
 2. From next SPEC: If `auto_enabled=true`, feature branches + Draft PRs created automatically without prompts
 

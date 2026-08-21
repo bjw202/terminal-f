@@ -143,7 +143,7 @@ docs/DEVELOPMENT.md:187 (트러블슈팅 행)
 ```yaml
 run_status: audit-ready
 run_complete_at: 2026-08-21
-run_commit_sha: pending-backfill-m1   # M1 커밋 직후 chore 커밋으로 실제 SHA 백필(schema D3 예외 패턴)
+run_commit_sha: 633e13b   # M1 커밋 — 플레이스홀더에서 백필(schema D3 예외 패턴)
 ac_pass_count: 14
 ac_fail_count: 0
 preserve_list_post_run_count: 11   # §D PRESERVE 트립와이어 11종(§E.2 AC-1~5/7/9 근거 열) 전부 관측

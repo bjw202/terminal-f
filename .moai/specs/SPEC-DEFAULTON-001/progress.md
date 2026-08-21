@@ -163,7 +163,7 @@ m1_to_mN_commit_strategy: "단일 M1 — Part A 선행 커밋(769a0fe) → M1 �
 ```yaml
 sync_status: audit-ready
 sync_complete_at: 2026-08-21
-sync_commit_sha: PENDING_BACKFILL   # sync 커밋 자기 SHA는 커밋 전 알 수 없음 — 후속 chore 커밋으로 백필(schema D3 예외 패턴)
+sync_commit_sha: 72e4b82   # sync 커밋 — 플레이스홀더에서 백필(schema D3 예외 패턴)
 changelog_entry_position: "CHANGELOG.md [Unreleased] — Added/Removed 2개 섹션, SPEC-DEFAULTON-001 기명"
 b12_self_test_a: "grep -c 'SPEC-DEFAULTON-001' CHANGELOG.md → 0 (사전 검사, 커밋 전)"
 b12_self_test_b: "acceptance.md AC 고유 ID 14종(AC-1..AC-14) ↔ CHANGELOG 기재 AC-1~AC-14 일치"

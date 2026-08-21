@@ -2,7 +2,7 @@
 id: SPEC-DEFAULTON-001
 title: "기본 활성 UX 통합 — copy-on-select 기본 on·pwsh 셸 통합 첫 실행 자동 설치 + 커맨드 팔레트 설치 커맨드 정리"
 version: "0.1.0"
-status: in-progress
+status: completed
 created: 2026-08-21
 updated: 2026-08-21
 author: manager-spec

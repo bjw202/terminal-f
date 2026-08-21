@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **SPEC-DEFAULTON-001**: 기본 활성 UX 통합 — 셸 통합·복사 편의 기능을 옵트인에서 기본 활성으로 전환
+  - copy-on-select 기본 켜짐: 텍스트를 선택하면 자동으로 클립보드 복사(기존 저장값 `false`는 존중, `src/main.ts`, `src/terms.ts`)
+  - PowerShell 셸 통합(멀티라인 + 현재 폴더 추적) 첫 실행 일회성 자동 설치 — 더 이상 팔레트에서 수동 설치할 필요 없음. `SHELL_INTG_AUTO_VER` 스탬프로 머신 재설치 시 1회 재설치 (`src/main.ts` `autoInstallShellIntegration`)
+  - **AC**: AC-1~AC-14 전부 PASS (npm run build ✓, cargo test 142+1+5 0 failed, autotest ok:true 48/48, 2026-08-21)
+
+### Removed
+- **SPEC-DEFAULTON-001**: 커맨드 팔레트에서 셸 통합 수동 설치 커맨드 2종 제거(`Shell: …`) — 첫 실행 자동 설치로 대체되어 죽은 흐름이 됨. 설치 상태 조회 IPC 표면(`pwsh_integration_status`) 동반 제거, 백엔드 `install_pwsh_integration` 커맨드는 자동 설치용으로 보존 (`src/main.ts`, `src/ipc.ts`, `src-tauri/src/lib.rs`)
+  - **문서**: GUIDE-command-palette.md §4-5(수동 설치 안내) 제거·재번호, GUIDE-features-easy.md·DEVELOPMENT.md 자동 설치 기준으로 갱신
+
 ## [0.1.3] - 2026-08-19
 
 ### Fixed

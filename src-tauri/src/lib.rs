@@ -172,7 +172,6 @@ pub fn run() {
             commands::paste_clipboard,
             commands::copy_to_clipboard,
             commands::open_external_url,
-            commands::pwsh_integration_status,
             commands::install_pwsh_integration,
             commands::resize_pty,
             commands::replay_pane,

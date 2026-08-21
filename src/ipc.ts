@@ -101,9 +101,10 @@ export const copyToClipboard = (text: string) => invoke<void>("copy_to_clipboard
 // that is not http(s), so this rejects for e.g. javascript:/file: URLs.
 export const openExternalUrl = (url: string) => invoke<void>("open_external_url", { url });
 
-// Opt-in pwsh $PROFILE shell integration: status + install for a named feature
-// ("multiline" = Alt+Enter->AddLine, "cwd" = OSC 9;9 prompt reporter). Install
-// edits the user's $PROFILE, so the UI confirms with the snippet first.
+// pwsh $PROFILE shell-integration install for a named feature ("multiline" =
+// Alt+Enter->AddLine, "cwd" = OSC 9;9 prompt reporter). Install edits the
+// user's $PROFILE; the first-launch default-on pass (main.ts) is the only
+// caller and appends both blocks once without a dialog.
 export type ShellIntegrationFeature = "multiline" | "cwd";
 export interface PwshIntegrationInfo {
   profilePath: string | null;
@@ -114,8 +115,6 @@ export interface PwshIntegrationInfo {
   snippet: string;
   available: boolean;
 }
-export const pwshIntegrationStatus = (feature: ShellIntegrationFeature) =>
-  invoke<PwshIntegrationInfo>("pwsh_integration_status", { feature });
 export const installPwshIntegration = (feature: ShellIntegrationFeature) =>
   invoke<PwshIntegrationInfo>("install_pwsh_integration", { feature });
 export const injectPrompt = (opts: {

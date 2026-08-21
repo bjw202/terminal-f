@@ -14,7 +14,7 @@ import { renderSidebar, sidebarBusy } from "./sidebar";
 import { registerCommandProvider } from "./commands";
 import { isPaletteOpen, openPalette } from "./palette";
 import { setTheme, themeById, THEMES } from "./themes";
-import { confirmModal, listModal, promptModal } from "./modal";
+import { promptModal } from "./modal";
 import {
   collectLeaves,
   firstPaneId,
@@ -94,69 +94,6 @@ function toggleOpenUrlOnClick(): void {
   terms.setOpenUrlOnClick(next);
   saveUiPrefs();
   showStatus(`Ctrl+click to open URLs ${next ? "enabled" : "disabled"}`);
-}
-
-// Opt-in pwsh $PROFILE shell integration. Both features edit the user's profile,
-// so we show the exact snippet and confirm first, then require a fresh pane.
-//   - "multiline": Ctrl/Shift+Enter reach pwsh as Alt+Enter (unbound by
-//     default); bind Alt+Enter -> AddLine so the chord inserts a newline.
-//   - "cwd": a prompt wrapper emits OSC 9;9 so a split opens in the live dir.
-async function installShellIntegration(
-  feature: ipc.ShellIntegrationFeature,
-  labels: { title: string; what: string; use: string },
-): Promise<void> {
-  let info;
-  try {
-    // Resolving $PROFILE spawns pwsh, whose cold start can be 1s+ on a fresh
-    // machine — show immediate feedback so the menu doesn't feel dead while we
-    // wait for the confirm dialog. (The path is cached after the first call.)
-    showStatus("Checking PowerShell profile…");
-    info = await ipc.pwshIntegrationStatus(feature);
-  } catch (e) {
-    showStatus(String(e), true);
-    return;
-  }
-  if (!info.available) {
-    showStatus("PowerShell (pwsh) not found — this only applies to PowerShell.", true);
-    return;
-  }
-  // Already present AND current — nothing to do but remind how to use/remove it.
-  if (info.installed && info.upToDate) {
-    listModal(`${labels.title} — already installed`, [
-      `Profile: ${info.profilePath}`,
-      "",
-      labels.use,
-      "Open a NEW PowerShell pane to pick it up (profiles load at shell start).",
-      "To undo, delete the fenced terminal-f block from the profile above.",
-    ]);
-    return;
-  }
-  // Installed but an OLDER block is present → offer to refresh it in place.
-  const updating = info.installed; // implies !info.upToDate here
-  const ok = await confirmModal({
-    title: updating ? `Update ${labels.title}` : labels.title,
-    okLabel: updating ? "Update" : "Install",
-    body: [
-      updating
-        ? "An older version of this block is in your profile. This replaces it with the current one:"
-        : labels.what,
-      "",
-      `  ${info.profilePath}`,
-      "",
-      ...info.snippet.split("\n").map((l) => (l ? `    ${l}` : "")),
-      "Open a NEW PowerShell pane afterwards to pick it up.",
-    ],
-  });
-  restoreTermFocus();
-  if (!ok) return;
-  try {
-    const res = await ipc.installPwshIntegration(feature);
-    showStatus(
-      `${updating ? "Updated" : "Installed"}. Open a NEW PowerShell pane to use it. (${res.profilePath})`,
-    );
-  } catch (e) {
-    showStatus(String(e), true);
-  }
 }
 
 // First-launch default-on (v0.1.x): install both pwsh $PROFILE blocks once,
@@ -627,26 +564,6 @@ registerCommandProvider(() => [
     title: `Links: ${uiPrefs.openUrlOnClick !== false ? "Disable" : "Enable"} Ctrl+click to open URLs`,
     run: () => toggleOpenUrlOnClick(),
   },
-  {
-    id: "shell.pwshMultiline",
-    title: "Shell: Enable multiline in PowerShell (Ctrl+Enter)",
-    run: () =>
-      installShellIntegration("multiline", {
-        title: "Enable multiline input in PowerShell?",
-        what: "This appends the following to your PowerShell profile so that Ctrl+Enter / Shift+Enter insert a newline instead of running the line:",
-        use: "Ctrl+Enter / Shift+Enter insert a newline at the pwsh prompt.",
-      }),
-  },
-  {
-    id: "shell.pwshCwd",
-    title: "Shell: Enable live directory tracking in PowerShell (split follows cwd)",
-    run: () =>
-      installShellIntegration("cwd", {
-        title: "Enable live directory tracking in PowerShell?",
-        what: "This appends the following to your PowerShell profile so that a new split opens in the directory you're currently in (not where the pane started):",
-        use: "New splits open in the pane's current directory.",
-      }),
-  },
 ]);
 
 // --------------------------------------------------------- pane helpers
@@ -890,6 +807,9 @@ async function boot(): Promise<void> {
   window.setInterval(() => void pollActivity(), 1000);
   void refreshTemplateCommands();
 
+  // @MX:ANCHOR: [AUTO] 첫 실행 자동 설치 트리거 — 스탬프 불일치 시 1회 실행 계약(R2/R4/R8)
+  // @MX:REASON: autotest 게이트·실패 재시도·버전 상향 재실행이 이 조건문 하나에 걸려 있다
+  // @MX:SPEC: SPEC-DEFAULTON-001
   // Default-on shell integration for fresh installs: one-shot after boot so
   // the pwsh cold start never blocks first paint. Never under autotest — test
   // runs must not edit the dev machine's profile.

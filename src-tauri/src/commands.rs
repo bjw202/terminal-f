@@ -1226,11 +1226,10 @@ fn pwsh_profile_path(pwsh: &std::path::Path) -> Result<std::path::PathBuf, Strin
 }
 
 /// `$PROFILE` path resolution spawns a pwsh subprocess, whose cold start can be
-/// 1s+ on a fresh machine — and the status query runs before the confirm dialog
-/// appears, so a naive re-spawn per click makes the menu feel unresponsive
-/// (and install would spawn a second time). The path is stable for the app's
-/// lifetime, so resolve once and cache it. Keyed by pwsh path so a PATH change
-/// (rare) still re-resolves.
+/// 1s+ on a fresh machine — and the first-launch auto-install resolves it twice
+/// in a row (once per feature), so a naive re-spawn doubles that wait. The
+/// path is stable for the app's lifetime, so resolve once and cache it. Keyed
+/// by pwsh path so a PATH change (rare) still re-resolves.
 static PROFILE_PATH_CACHE: std::sync::Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>> =
     std::sync::Mutex::new(None);
 
@@ -1243,36 +1242,6 @@ fn cached_profile_path(pwsh: &std::path::Path) -> Result<std::path::PathBuf, Str
     let profile = pwsh_profile_path(pwsh)?;
     *PROFILE_PATH_CACHE.lock().unwrap() = Some((pwsh.to_path_buf(), profile.clone()));
     Ok(profile)
-}
-
-/// Report whether a shell-integration block is installed, without modifying
-/// anything. Drives the confirmation dialog.
-#[tauri::command]
-pub fn pwsh_integration_status(feature: String) -> Result<PwshIntegrationInfo, String> {
-    let (snippet, begin, _end) = feature_blocks(&feature)?;
-    let Some(pwsh) = resolve_pwsh() else {
-        return Ok(PwshIntegrationInfo {
-            profile_path: None,
-            installed: false,
-            up_to_date: false,
-            snippet,
-            available: false,
-        });
-    };
-    let path = cached_profile_path(&pwsh)?;
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let installed = crate::shellint::is_installed(&existing, begin);
-    // Up to date iff the current block is already present verbatim (a refresh
-    // would be a no-op). A stale/older block reports installed=true but
-    // up_to_date=false so the UI can offer an update.
-    let up_to_date = installed && existing.contains(snippet.trim_end());
-    Ok(PwshIntegrationInfo {
-        profile_path: Some(path.to_string_lossy().into_owned()),
-        installed,
-        up_to_date,
-        snippet,
-        available: true,
-    })
 }
 
 /// Append (or refresh) a shell-integration block in the user's pwsh `$PROFILE`

@@ -193,9 +193,8 @@ A. 책상 배치는 저장되어 다음에 그대로 복원되지만, 돌아가�
   줄로 넘어갑니다.
 - **일반 PowerShell 프롬프트에서도 쓸 수 있습니다**: terminal-f가 처음 실행될
   때 PowerShell 프로필에 자동으로 설치해 두어, 새 PowerShell 칸부터 바로
-  동작합니다. (직접 설치하려면 명령 팔레트(`Ctrl+Shift+P`)의 **Shell: Enable
-  multiline in PowerShell**을 실행하세요. 되돌리려면 프로필에서 그 블록을
-  지우면 되고, 지운 뒤에는 다시 자동 설치되지 않습니다.)
+  동작합니다. (되돌리려면 프로필에서 그 블록을 지우면 되고, 지운 뒤에는 다시
+  자동 설치되지 않습니다.)
 
 ### split한 새 칸이 "지금 있는 폴더"에서 열리게 하기
 
@@ -203,8 +202,7 @@ A. 책상 배치는 저장되어 다음에 그대로 복원되지만, 돌아가�
   시작합니다. 셸에서 `cd`로 다른 폴더로 이동했어도, 새 칸은 옛날 폴더에서
   열립니다.
 - **새 칸이 "지금 내가 있는 폴더"에서 열립니다.** terminal-f가 처음 실행될 때
-  PowerShell 프로필에 자동으로 설치됩니다. (직접 설치하려면 명령 팔레트의
-  **Shell: Enable live directory tracking in PowerShell**을 실행하세요.)
+  PowerShell 프로필에 자동으로 설치됩니다.
   (Windows 특성상 PowerShell은 `cd`를 해도 프로그램이 있는 폴더가 실제로는
   안 바뀌기 때문에, 이 설정 없이는 자동으로 알 방법이 없습니다.)
 - 설치 후에는 **열려 있던 칸은 새로 열어야** 적용됩니다(프로필은 셸이 처음
@@ -260,8 +258,6 @@ A. 책상 배치는 저장되어 다음에 그대로 복원되지만, 돌아가�
 | **View: Increase/Decrease font size** | 글자 크게/작게 |
 | **Copy: Enable/Disable copy-on-select** | 글자를 선택하는 순간 자동 복사 켜기/끄기 (기본 켜짐) |
 | **Links: Enable/Disable Ctrl+click to open URLs** | 출력의 http/https 링크를 Ctrl+클릭으로 브라우저에서 열기 켜기/끄기 (기본 켜짐, http/https만 허용) |
-| **Shell: Enable multiline in PowerShell** | 일반 PowerShell 프롬프트에서도 Ctrl/Shift+Enter로 줄바꿈되게 프로필에 설정(첫 실행 시 자동 설치; 직접 실행 시 확인 창) |
-| **Shell: Enable live directory tracking** | split로 새 칸을 열 때 지금 있는 디렉터리에서 열리게 프로필에 설정(첫 실행 시 자동 설치; 직접 실행 시 확인 창, 새 칸 필요). 예전 버전이 깔려 있으면 다시 실행 시 "Update"로 최신 스니펫으로 갱신 |
 | **Workspace: Set root folder…** | 이 책상의 **시작 폴더**를 폴더 선택 창으로 지정. 다음에 책상을 열 때부터 모든 칸이 그 폴더에서 시작 |
 | **Workspace: Clear root folder** | 지정해 둔 시작 폴더를 해제(각 칸의 현재 경로는 그대로 유지) |
 | **Theme: …** | 색 테마 바꾸기 (Catppuccin Mocha/Latte, One Dark, Solarized Light, Campbell PowerShell) |

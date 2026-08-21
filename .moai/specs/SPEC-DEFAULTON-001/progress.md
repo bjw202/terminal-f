@@ -56,11 +56,107 @@ plan-auditor iteration 1 판정: **FAIL 0.81** — 점수는 Tier M 임계값 0.
 
 ## §E.2 Run-phase Evidence
 
-_<pending run-phase>_
+**실행 환경 특기(2026-08-21)**: run-phase는 오케스트레이터 worktree 격리 정책에 따라 격리 워크트리(분기 `worktree-agent-aefdeb8f2f69fb788`)에서 수행됐다. Part A 구현 6파일은 주 체크아웃의 미커밋 상태였으므로 바이트 복사로 워크트리에 이관했다(이관 전 `diff -u` 대조로 Part A 설계 구조물 — 부팅 읽기 `!== false`·스탬프 상수·자동 설치 본체·트리거 — 와 내용 일치 확인). `core.autocrlf=true` 정규화로 커밋 blob은 기존 인덱스와 동일한 LF다. 최종 반영은 `git push origin HEAD:main`(Route A main-direct).
+
+### A.1 keep/remove 판정 — status IPC 표면 3곳 제거
+
+plan.md §A.1의 run-phase 재grep 의무 이행(제거 전, HEAD 8f75808 + Part A 트리):
+
+- `grep -n "pwshIntegrationStatus" src/ipc.ts src/main.ts` → `src/ipc.ts:117`(래퍼 정의) + `src/main.ts:114`(유일 호출자 — 죽은 흐름 내부)
+- `grep -n "pwshIntegrationStatus\|installShellIntegration\|pwsh_integration_status" src/autotest.ts` → **0건(exit 1)** — autotest 무관계 재확인
+- `grep -rn "pwsh_integration_status" src-tauri/src` → `commands.rs:1251` + 등록 `lib.rs:175`만 — 다른 호출 경로 없음
+- `grep -rn "pwsh_integration_status" src-tauri/ --include="*.rs"`(위 2건 제외) → 0건 — **커버 테스트 0건 재확인**(AC-10 불변 근거)
+
+**판정: 제거.** (i) `src/ipc.ts` 래퍼 2줄 + 주석 재서술, (ii) `commands.rs` `pwsh_integration_status` 커맨드(doc 주석 포함 29줄), (iii) `lib.rs` 등록 1줄. 유지 사유 없음(상태 표시 기능 복귀 계획 부재). 공유 자산 보존: `PwshIntegrationInfo`(install 반환형)·`ShellIntegrationFeature`(install 래퍼 파라미터)·`cached_profile_path`/`PROFILE_PATH_CACHE`(install 경로 :1286 계속 사용 — 죽은 흐름 설명 doc 주석만 자동 설치 근거로 재서술)·`shellint.rs::is_installed`(shellint.rs 내부 :70 + 7개 단위테스트가 계속 사용).
+
+### RED 상당 증거(제거 전 존재 grep verbatim — plan.md §A.2)
+
+```
+$ grep -n "shell.pwshMultiline\|shell.pwshCwd" src/main.ts
+631:    id: "shell.pwshMultiline",
+641:    id: "shell.pwshCwd",
+$ grep -n "installShellIntegration" src/main.ts
+104:async function installShellIntegration(
+634:      installShellIntegration("multiline", {
+644:      installShellIntegration("cwd", {
+$ grep -c "Open a NEW PowerShell pane" src/main.ts
+4
+$ grep -n "Shell: Enable" docs/GUIDE-command-palette.md docs/GUIDE-features-easy.md docs/DEVELOPMENT.md
+docs/GUIDE-command-palette.md:176 / :188 (커맨드 문서 2행)
+docs/GUIDE-features-easy.md:196 / :207 / :263 / :264 (수동 설치 산문 2곳 + 메뉴 사전 2행)
+docs/DEVELOPMENT.md:187 (트러블슈팅 행)
+```
+
+### AC-1~AC-14 판정 (GREEN — HEAD 769a0fe + M1 변경 트리에서 관측)
+
+| AC | 판정 | 근거(명령 → 관측) |
+|---|---|---|
+| AC-1/AC-2 | PASS | `grep -n "copyOnSelect !== false" src/main.ts` → `:795`, `:802`(2건) · `grep -n "let copyOnSelect = true" src/terms.ts` → `:53`(1건) |
+| AC-3/AC-4 | PASS | `grep -n "SHELL_INTG_AUTO_VER\|pwshIntegrationAuto\|autoInstallShellIntegration" src/main.ts` → 상수 `:103`, 정의 `:105`, 스탬프 `:116`, 스냅샷 복원 `:797-798`, 트리거 `if (!bootInfo.autotest && …)` `:816` + `void …()` `:817` · `grep -n "pwshIntegrationAuto" src/types.ts` → `:71` |
+| AC-5 | PASS | `grep -n -B6 "pwshIntegrationAuto = SHELL_INTG_AUTO_VER" src/main.ts` → catch→`return`(`:113`)가 루프 내 실패 분기, 대입(`:116`)은 루프 완전 통과 후 도달 |
+| AC-6 | PASS | `grep -c "shell.pwshMultiline\|shell.pwshCwd" src/main.ts` → **0**(baseline 2건) |
+| AC-7 | PASS | `grep -c "copy.onSelect" src/main.ts` → 1(`:558`) · `grep -c "links.toggleOpen" src/main.ts` → 1(`:563`) |
+| AC-8 | PASS | `installShellIntegration` in main.ts → 0(exit 1) · `pwshIntegrationStatus` in ipc.ts+main.ts → 0(exit 1) · `pwsh_integration_status` in src/+src-tauri/src → 0(exit 1). 제거 완료라 유지 사유 기록 불필요 |
+| AC-9 | PASS | `grep -n "install_pwsh_integration" src-tauri/src/commands.rs` → `:1255` · `ls src-tauri/src/shellint.rs` → 존재 · `grep -n "installPwshIntegration" src/main.ts` → `:108`(자동 설치 호출) |
+| AC-10 | PASS | `cd src-tauri && cargo test` → **142 + 1 + 5 passed, 0 failed**(baseline과 수치 동일 — 제거 커맨드 커버 테스트 0건 예측 적중, 제거된 테스트명 없음) |
+| AC-11 | PASS | `npm run build` → tsc --noEmit exit 0 + `✓ 39 modules transformed`(번들 495.96→492.08 kB, `✓ built in 1.32s`) |
+| AC-12 | PASS | 팬 밖 `TERMF_AUTOTEST=1 TERMF_REPORT_PATH=… npx tauri dev` → `src-tauri/autotest-report.json`(2026-08-21 13:09)에서 **`"ok": true`** · `"errors": []` · checks 48항목 전부 true · `flowOk: true` · switch p95 62.8ms · soak rss ×1.022 |
+| AC-13 | PASS | `grep -rn "Shell: Enable" docs/GUIDE-command-palette.md docs/GUIDE-features-easy.md` → **0**(exit 1) · `grep -n "Shell: Enable" docs/DEVELOPMENT.md` → 0(exit 1, `:187` 행 제거 + `:191` 재서술) · ADR-011 `:35`·PLAN-UX-polish `:114`/`:174` 보존(역사 기록, 무변경 diff로 확인) |
+| AC-14 | PASS | `grep -c "Open a NEW PowerShell pane" src/main.ts` → **1**(`:118` 자동 설치 안내 — baseline 4건 중 죽은 흐름 3건 소멸 확인) |
+
+### 스위트 원본 출력(attribution: this run, this tree)
+
+- **baseline**(HEAD 8f75808 + Part A 트리, 커밋 전): `npm run build` → `✓ built in 1.31s`(39 modules, exit 0) · `cargo test` → unittests 142 passed / pipe_smoke 1 passed / pty_smoke 5 passed, 0 failed
+- **M1 완료**(HEAD 769a0fe + M1 변경): `npm run build` → `✓ built in 1.32s`(tsc exit 0) · `cargo test` → 동일 142+1+5, 0 failed
+- **autotest**(HEAD 769a0fe + M1 변경): 리포트 `src-tauri/autotest-report.json` — startedAt `2026-08-21T04:07:36.228Z`, `"ok": true`
+- 스코프 검증: `git diff --stat` → Part B 7파일(+23/−178) = plan.md 예측 파일 목록과 정확히 일치 · PRESERVE 대상(terms.ts/types.ts/autotest.ts/ADR-011/PLAN-UX-polish) diff 0
+
+### 커밋 기록
+
+| # | SHA | 서브젝트 | 내용 |
+|---|---|---|---|
+| 1 | `769a0fe` | feat(SPEC-DEFAULTON-001): Part A 기본 활성 전환 | Part A 6파일 + spec.md `draft → in-progress` 전이(7 files, +81/−36) |
+| 2 | M1 커밋(§E.3에 백필) | feat(SPEC-DEFAULTON-001): M1 팔레트 설치 커맨드 제거·죽은 흐름 정리 | Part B 7파일 + progress.md §E.2/§E.3 |
+| 3 | 백필 커밋 | chore(SPEC-DEFAULTON-001): M1 §E.3 run_commit_sha 백필 | 플레이스홀더 → 실제 SHA(schema D3 예외 패턴) |
+
+### run-phase 발견·처치(plan §A.3 표를 넘어선 항목 — 사유 기록)
+
+1. **GUIDE-command-palette.md §5 통짜 제거 + 재번호(§6~§9 → §5~§8)**: 커맨드 2행만 지우면 섹션 제목·"직접 실행할 때는 … 동의를 받은 뒤" 산문이 유령으로 남는다. §5 전체(37줄) 제거 후 후속 섹션 재번호. 내부 교차참조 2건 동행 수정(§1의 "§5의 live directory tracking 설정" → 셸 통합 설명+기능 가이드 링크, 안전 원칙의 "§7·§8" → "§6·§7"). 문서 간 섹션 앵커 참조 0건(제거 전 grep)이라 파급 없음.
+2. **DEVELOPMENT.md:191 함정 항목 (2) 재서술**: "팔레트 명령을 실제로 실행해야 설치됨"은 plan §A.3 grep("Shell: Enable")에 걸리지 않았으나 R13·시나리오 6(안내 문서에 죽은 메뉴 안내 부재) 위반 잔여다. "첫 실행 자동 설치로 설치됨(스탬프 기록 머신 재설치는 `SHELL_INTG_AUTO_VER` 상향)"으로 교체 — B10의 run-phase 확장 적용.
+3. **commands.rs `PROFILE_PATH_CACHE` doc 주석 재서술**: 원 주석의 "status query … confirm dialog … per click"은 죽은 흐름 설명(acceptance §D.1 Readable 위반) → 첫 실행 자동 설치의 feature별 2회 연속 해석 근거로 재서술.
+4. **ipc.ts 주석 재서술**: "status + install … the UI confirms first"(Opt-in 서술) → install 단독·첫 실행 자동 설치 유일 호출자 서술.
+5. **main.ts modal import 축소**: tsconfig `noUnusedLocals: true`라 `confirmModal`·`listModal` 미사용 임포트가 tsc를 깬다. `import { promptModal } from "./modal"`로 축소(잔여 호출자 5곳). 두 함수 자체는 modal.ts 모듈 API로 보존.
+6. **@MX:ANCHOR 부착(M1 step 6 선택 항목 적용)**: 자동 설치 트리거에 한국어 ANCHOR+REASON+SPEC 3행. 태그 문구에 AC grep 식별자를 넣지 않아 증거 grep 오염 없음.
+7. **`src-tauri/Cargo.toml` LF→CRLF 팬텀**: autotest cargo 빌드 후 ` M ` 표시되나 `git diff` 내용 0줄(autocrlf 팬텀). 커밋에서 제외 처리.
+
+### 미검증(Gaps) — 수동 검증 항목 이월
+
+- **실기기 첫 실행 자동 설치·안내(시나리오 1)·저장 `false` 존중(시나리오 2)·업그레이드 1회 재설치(시나리오 5)**: R2가 autotest에서 자동 설치를 스킵하므로 autotest로 검증 불가(acceptance §D.3 잔여 위험 그대로). 격리 워크트리 실행 환경에서 실사용 프로필 실험은 부적절해 미실시 — 수동 검증 항목으로 이월.
+- 크로스 플랫폼(linux/macOS) 빌드 미실시 — SPEC 표면이 Windows pwsh 전용, CI 부재.
+
+### 잔여 위험
+
+- acceptance §D.3 기재 그대로: TS 러너 부재 구조 갭(구조 grep + autotest 두 축), Copy 토글 제목 표시 잔여 불일치(후속 후보), (a) 1회 재설치 사용자 혼란(실사용 피드백 대기), pwsh 콜드 스타트 안내 지연.
 
 ## §E.3 Run-phase Audit-Ready Signal
 
-_<pending run-phase>_
+```yaml
+run_status: audit-ready
+run_complete_at: 2026-08-21
+run_commit_sha: pending-backfill-m1   # M1 커밋 직후 chore 커밋으로 실제 SHA 백필(schema D3 예외 패턴)
+ac_pass_count: 14
+ac_fail_count: 0
+preserve_list_post_run_count: 11   # §D PRESERVE 트립와이어 11종(§E.2 AC-1~5/7/9 근거 열) 전부 관측
+l44_pre_commit_fetch: "git fetch origin main → rev-list --left-right origin/main...HEAD → 0 0 (2026-08-21, 커밋 전)"
+l44_post_push_fetch: "push 후 run-phase 완료 보고(E7)에서 verbatim 인증 — 본 커밋은 푸시에 선행"
+new_warnings_or_lints_introduced: 0   # tsc --noEmit exit 0 · cargo test 0 failed · 신규 경고 0
+cross_platform_build:
+  windows: "pass — npm run build(39 modules) + cargo test 142+1+5 + autotest ok:true (격리 워크트리)"
+  linux: "not_run — SPEC 표면이 pwsh(Windows) 전용"
+  macos: "not_run — 동일 사유"
+total_run_phase_files: 11   # Part A 6 + spec.md(frontmatter) + Part B 신규 3(ipc.ts/lib.rs/DEVELOPMENT.md) + progress.md(§E.2/§E.3)
+m1_to_mN_commit_strategy: "단일 M1 — Part A 선행 커밋(769a0fe) → M1 커밋 → §E.3 SHA 백필 chore 커밋 → push origin HEAD:main"
+```
 
 ## §E.4 Sync-phase Audit-Ready Signal
 

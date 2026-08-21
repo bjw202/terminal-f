@@ -60,10 +60,15 @@ export interface UiPrefs {
   theme?: string;
   fontSize?: number;
   sidebar?: { collapsed?: boolean; width?: number };
-  /** Copy selection to clipboard automatically on select (default off). */
+  /** Copy selection to clipboard automatically on select (default on). */
   copyOnSelect?: boolean;
   /** Ctrl/Cmd+click a URL in output to open it in the browser (default on). */
   openUrlOnClick?: boolean;
+  /** Version stamp of the first-launch pwsh shell-integration auto-install
+   *  (multiline + cwd blocks; see main.ts `autoInstallShellIntegration`).
+   *  Absent = fresh install with the auto-install still pending; set on
+   *  completion, so a later manual profile removal is never re-added. */
+  pwshIntegrationAuto?: string;
 }
 
 export type Lifecycle = "starting" | "running" | "exited" | "closing";

@@ -180,9 +180,9 @@ A. 책상 배치는 저장되어 다음에 그대로 복원되지만, 돌아가�
   수 있습니다. 이때는 **`Shift`를 누른 채 드래그**하면 강제로 선택됩니다.
   또한 Claude Code·vim·tmux **자체의 복사 기능**으로 복사한 내용도 이제
   시스템 클립보드에 정상적으로 들어갑니다(OSC 52 지원).
-- **자동 복사(copy-on-select)**: 원하면 명령 팔레트의
-  **Copy: Enable copy-on-select**를 켜세요. 글자를 선택하는 순간 바로
-  클립보드에 복사됩니다(기본은 꺼짐).
+- **자동 복사(copy-on-select)**: 기본으로 켜져 있습니다. 글자를 선택하는 순간
+  바로 클립보드에 복사됩니다. 끄려면 명령 팔레트의 **Copy: Disable
+  copy-on-select**를 실행하세요.
 
 ### 여러 줄 입력하기 (Ctrl+Enter)
 
@@ -191,24 +191,25 @@ A. 책상 배치는 저장되어 다음에 그대로 복원되지만, 돌아가�
   나눠 쓸 수 있습니다.
 - **한글도 안전합니다**: 조합 중인 글자가 있어도 글자가 먼저 완성된 뒤 다음
   줄로 넘어갑니다.
-- **일반 PowerShell 프롬프트에서도 쓰려면** 한 번만 설정하면 됩니다: 명령
-  팔레트(`Ctrl+Shift+P`)에서 **Shell: Enable multiline in PowerShell**을
-  실행하세요. 안내 창에서 PowerShell 프로필에 추가할 내용을 보여주고 동의를
-  받은 뒤 한 줄을 설치합니다. 그다음 **열려 있던 PowerShell 칸은 새로
-  열어야** 적용됩니다. (되돌리려면 프로필에서 그 블록을 지우면 됩니다.)
+- **일반 PowerShell 프롬프트에서도 쓸 수 있습니다**: terminal-f가 처음 실행될
+  때 PowerShell 프로필에 자동으로 설치해 두어, 새 PowerShell 칸부터 바로
+  동작합니다. (직접 설치하려면 명령 팔레트(`Ctrl+Shift+P`)의 **Shell: Enable
+  multiline in PowerShell**을 실행하세요. 되돌리려면 프로필에서 그 블록을
+  지우면 되고, 지운 뒤에는 다시 자동 설치되지 않습니다.)
 
 ### split한 새 칸이 "지금 있는 폴더"에서 열리게 하기
 
 - 원래는 칸을 나누면(split) 새 칸이 **그 칸을 처음 열었을 때의 폴더**에서
   시작합니다. 셸에서 `cd`로 다른 폴더로 이동했어도, 새 칸은 옛날 폴더에서
   열립니다.
-- 한 번만 설정하면 **새 칸이 "지금 내가 있는 폴더"에서 열립니다.** 명령
-  팔레트에서 **Shell: Enable live directory tracking in PowerShell**을 실행
-  하세요. (Windows 특성상 PowerShell은 `cd`를 해도 프로그램이 있는 폴더가
-  실제로는 안 바뀌기 때문에, 이 설정 없이 자동으로 알 방법이 없습니다.)
-- 설정하면 안내 창이 프로필에 추가할 내용을 보여주고 동의를 받은 뒤 설치
-  합니다. 그다음 **열려 있던 칸은 새로 열어야** 적용됩니다(프로필은 셸이 처음
-  켜질 때만 읽힙니다). 되돌리려면 프로필에서 그 블록을 지우면 됩니다.
+- **새 칸이 "지금 내가 있는 폴더"에서 열립니다.** terminal-f가 처음 실행될 때
+  PowerShell 프로필에 자동으로 설치됩니다. (직접 설치하려면 명령 팔레트의
+  **Shell: Enable live directory tracking in PowerShell**을 실행하세요.)
+  (Windows 특성상 PowerShell은 `cd`를 해도 프로그램이 있는 폴더가 실제로는
+  안 바뀌기 때문에, 이 설정 없이는 자동으로 알 방법이 없습니다.)
+- 설치 후에는 **열려 있던 칸은 새로 열어야** 적용됩니다(프로필은 셸이 처음
+  켜질 때만 읽힙니다). 되돌리려면 프로필에서 그 블록을 지우면 되고, 지운
+  뒤에는 다시 자동 설치되지 않습니다.
 - 원리(쉽게): 설정을 켜면 PowerShell이 프롬프트를 그릴 때마다 "나 지금 이
   폴더에 있어"라는 **눈에 안 보이는 신호**를 같이 보냅니다. terminal-f가 그
   신호를 받아 기억해 두었다가, 칸을 나눌 때 그 폴더에서 새 칸을 엽니다. 이
@@ -257,10 +258,10 @@ A. 책상 배치는 저장되어 다음에 그대로 복원되지만, 돌아가�
 | **Workspace: Switch to "이름"** | 그 이름의 책상으로 이동 (`Ctrl+1~8`도 됨) |
 | **View: Toggle sidebar** (`Ctrl+Shift+B`) | 왼쪽 사이드바 접기/펴기 |
 | **View: Increase/Decrease font size** | 글자 크게/작게 |
-| **Copy: Enable/Disable copy-on-select** | 글자를 선택하는 순간 자동 복사 켜기/끄기 (기본 꺼짐) |
+| **Copy: Enable/Disable copy-on-select** | 글자를 선택하는 순간 자동 복사 켜기/끄기 (기본 켜짐) |
 | **Links: Enable/Disable Ctrl+click to open URLs** | 출력의 http/https 링크를 Ctrl+클릭으로 브라우저에서 열기 켜기/끄기 (기본 켜짐, http/https만 허용) |
-| **Shell: Enable multiline in PowerShell** | 일반 PowerShell 프롬프트에서도 Ctrl/Shift+Enter로 줄바꿈되게 프로필에 설정(1회, 확인 후) |
-| **Shell: Enable live directory tracking** | split로 새 칸을 열 때 지금 있는 디렉터리에서 열리게 프로필에 설정(1회, 확인 후, 새 칸 필요). 예전 버전이 깔려 있으면 다시 실행 시 "Update"로 최신 스니펫으로 갱신 |
+| **Shell: Enable multiline in PowerShell** | 일반 PowerShell 프롬프트에서도 Ctrl/Shift+Enter로 줄바꿈되게 프로필에 설정(첫 실행 시 자동 설치; 직접 실행 시 확인 창) |
+| **Shell: Enable live directory tracking** | split로 새 칸을 열 때 지금 있는 디렉터리에서 열리게 프로필에 설정(첫 실행 시 자동 설치; 직접 실행 시 확인 창, 새 칸 필요). 예전 버전이 깔려 있으면 다시 실행 시 "Update"로 최신 스니펫으로 갱신 |
 | **Workspace: Set root folder…** | 이 책상의 **시작 폴더**를 폴더 선택 창으로 지정. 다음에 책상을 열 때부터 모든 칸이 그 폴더에서 시작 |
 | **Workspace: Clear root folder** | 지정해 둔 시작 폴더를 해제(각 칸의 현재 경로는 그대로 유지) |
 | **Theme: …** | 색 테마 바꾸기 (Catppuccin Mocha/Latte, One Dark, Solarized Light, Campbell PowerShell) |

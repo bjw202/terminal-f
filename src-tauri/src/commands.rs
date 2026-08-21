@@ -1276,8 +1276,12 @@ pub fn pwsh_integration_status(feature: String) -> Result<PwshIntegrationInfo, S
 }
 
 /// Append (or refresh) a shell-integration block in the user's pwsh `$PROFILE`
-/// (idempotent). The frontend MUST show the snippet and get explicit
-/// confirmation first — this edits a file the user owns.
+/// (idempotent). Interactive installs MUST show the snippet and get explicit
+/// confirmation first — this edits a file the user owns. The one documented
+/// exception: the first-launch default-on pass (main.ts
+/// `autoInstallShellIntegration`) appends both blocks once on a fresh install
+/// without a dialog and reports it on the status bar; after that one-shot,
+/// manual removals are never re-added.
 #[tauri::command]
 pub fn install_pwsh_integration(feature: String) -> Result<PwshIntegrationInfo, String> {
     let (snippet, begin, end) = feature_blocks(&feature)?;

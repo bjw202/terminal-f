@@ -159,6 +159,28 @@ async function installShellIntegration(
   }
 }
 
+// First-launch default-on (v0.1.x): install both pwsh $PROFILE blocks once,
+// without the interactive confirm. Bump the stamp when a snippet change
+// should re-run the one-shot install — the install is idempotent and
+// refreshes an older block in place.
+const SHELL_INTG_AUTO_VER = "v1";
+
+async function autoInstallShellIntegration(): Promise<void> {
+  for (const feature of ["multiline", "cwd"] as const) {
+    try {
+      await ipc.installPwshIntegration(feature);
+    } catch (e) {
+      // Leave the stamp unset so the next launch retries. A user who removed
+      // the blocks manually is past this point (the stamp was already set).
+      console.warn("[autoInstallShellIntegration]", feature, e);
+      return;
+    }
+  }
+  uiPrefs.pwshIntegrationAuto = SHELL_INTG_AUTO_VER;
+  saveUiPrefs();
+  showStatus("PowerShell multiline + directory tracking enabled. Open a NEW PowerShell pane to use it.");
+}
+
 // ------------------------------------------------------------------ render
 
 const renderCtx: RenderCtx = {
@@ -853,18 +875,27 @@ async function boot(): Promise<void> {
     theme: typeof snap.ui?.theme === "string" ? snap.ui.theme : undefined,
     fontSize: typeof snap.ui?.fontSize === "number" ? snap.ui.fontSize : undefined,
     sidebar: typeof snap.ui?.sidebar === "object" && snap.ui.sidebar ? snap.ui.sidebar : {},
-    copyOnSelect: snap.ui?.copyOnSelect === true,
+    copyOnSelect: snap.ui?.copyOnSelect !== false, // default on when unset
     openUrlOnClick: snap.ui?.openUrlOnClick !== false, // default on when unset
+    pwshIntegrationAuto:
+      typeof snap.ui?.pwshIntegrationAuto === "string" ? snap.ui.pwshIntegrationAuto : undefined,
   };
   setTheme(themeById(uiPrefs.theme));
   if (uiPrefs.fontSize) terms.applyTerminalOptions({ fontSize: uiPrefs.fontSize });
-  terms.setCopyOnSelect(uiPrefs.copyOnSelect === true);
+  terms.setCopyOnSelect(uiPrefs.copyOnSelect !== false);
   terms.setOpenUrlOnClick(uiPrefs.openUrlOnClick !== false);
   refreshSidebar();
   const target = snap.activeWorkspaceId ?? metas[0]?.id;
   if (target) await switchTo(target);
   window.setInterval(() => void pollActivity(), 1000);
   void refreshTemplateCommands();
+
+  // Default-on shell integration for fresh installs: one-shot after boot so
+  // the pwsh cold start never blocks first paint. Never under autotest — test
+  // runs must not edit the dev machine's profile.
+  if (!bootInfo.autotest && uiPrefs.pwshIntegrationAuto !== SHELL_INTG_AUTO_VER) {
+    void autoInstallShellIntegration();
+  }
 
   // File drag-drop (ADR-010): Tauri intercepts OS file drops (HTML5 drop
   // never fires), so consume its drag-drop event instead. Dropped paths are

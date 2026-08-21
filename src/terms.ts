@@ -48,9 +48,9 @@ const ACK_FLUSH_IDLE_MS = 50;
 const SNAPSHOT_DRAIN_TIMEOUT_MS = 500;
 
 // Copy-on-select: when on, completing a selection copies it to the clipboard
-// automatically (opt-in, persisted in uiPrefs; default off). Mirrors the
-// classic X11/terminal behaviour some users expect.
-let copyOnSelect = false;
+// automatically (persisted in uiPrefs; default on). Mirrors the classic
+// X11/terminal behaviour some users expect.
+let copyOnSelect = true;
 
 // Ctrl/Cmd+click on a linkified URL in terminal output opens it in the browser.
 // The web-links addon underlines URLs on hover; the modifier gate keeps plain

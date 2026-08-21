@@ -1,4 +1,5 @@
-//! PowerShell shell-integration snippets (opt-in, user-profile edits).
+//! PowerShell shell-integration snippets (installed into the user's pwsh
+//! `$PROFILE` — default-on since the first-launch auto-install pass).
 //!
 //! Two independent, fenced blocks we can add to the pwsh `$PROFILE`:
 //!

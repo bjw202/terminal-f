@@ -1162,8 +1162,10 @@ pub fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), Strin
 
 // ------------------------------------------ shell integration: pwsh $PROFILE
 
-/// Status of an opt-in pwsh `$PROFILE` block (see shellint.rs). Returned for the
-/// confirmation UI before we touch the user's profile.
+/// Result of a pwsh `$PROFILE` block install/refresh (see shellint.rs). Consumed
+/// by the first-launch auto-installer (default-on pass) — the interactive
+/// confirmation UI was removed with it; the install itself is idempotent and
+/// refreshes older blocks in place.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PwshIntegrationInfo {
@@ -1172,11 +1174,10 @@ pub struct PwshIntegrationInfo {
     /// Whether this feature's fenced block is already present.
     pub installed: bool,
     /// Whether the installed block byte-matches the *current* snippet. False
-    /// when an older version of the block is present and a refresh would change
-    /// it — the UI offers an update in that case. Always true when not installed
-    /// is irrelevant; only meaningful together with `installed`.
+    /// when an older version of the block is present; the install refreshes it
+    /// in place (idempotent). Only meaningful together with `installed`.
     pub up_to_date: bool,
-    /// The exact block we would add — shown to the user for confirmation.
+    /// The exact block that was (or would be) appended.
     pub snippet: String,
     /// Whether a PowerShell binary was found at all.
     pub available: bool,

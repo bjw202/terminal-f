@@ -322,7 +322,13 @@ function programName(path: string): string {
 function updateHeaders(): void {
   if (!current) return;
   const leaves = collectLeaves(current.root);
-  panesEl.classList.toggle("single-pane", leaves.length === 1 && !zoomedPaneId);
+  const wasSingle = panesEl.classList.contains("single-pane");
+  const isSingle = panesEl.classList.toggle("single-pane", leaves.length === 1 && !zoomedPaneId);
+  // 헤더(22px)는 .term-host 안쪽에 있어 host 크기가 변하지 않으므로 ResizeObserver가
+  // 울리지 않는다. 헤더 표시 상태가 바뀌면 .term-body 높이가 바뀐 것이므로 다음 프레임에
+  // 칸 수를 다시 맞춘다 — 안 하면 renderWorkspace의 rAF refit과 mountPane IPC 완료 순서에
+  // 따라 xterm/PTY 행 수가 실제보다 1 많거나(마지막 줄 잘림) 적게(하단 공백) 남는다.
+  if (wasSingle !== isSingle) requestAnimationFrame(refitAll);
   leaves.forEach((leaf, i) => {
     const info = sessionInfoByPane.get(leaf.id);
     const title = info

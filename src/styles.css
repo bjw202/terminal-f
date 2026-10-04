@@ -544,11 +544,14 @@ body,
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  padding: 3px;
 }
 
+/* 여백은 .term-body가 아니라 .xterm 자신에 둔다. FitAddon은 부모 높이(border-box,
+   전역 box-sizing 때문에 패딩 포함)에서 .xterm 자신의 패딩만 빼므로, 부모에 패딩이 있으면
+   사용 가능 높이를 6px 크게 계산해 창 높이에 따라 한 행이 넘치고 마지막 줄이 잘린다. */
 .term-host .xterm {
   height: 100%;
+  padding: 3px;
 }
 
 /* Overlay scrollbar: scrolling works, but the bar is invisible until the
